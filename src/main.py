@@ -15,6 +15,8 @@ import asyncio
 import logging
 import sys
 
+import discord
+
 from src.bot.client import ScheduleBot
 from src.config import get_settings
 from src.db import engine
@@ -49,6 +51,25 @@ async def main() -> None:
 
     try:
         await bot.start(settings.discord_token)
+    except discord.LoginFailure:
+        # Discord 對錯誤的 token 只回一句 "Improper token has been passed."，
+        # 加上 30 行 traceback 反而蓋掉重點。這裡直接給可執行的排查步驟。
+        log.error(
+            "Discord 登入失敗：token 無效。請依序確認：\n"
+            "  1. 是不是複製到 Application ID（純數字）或 Client Secret？"
+            "bot token 是三段以 '.' 分隔的字串\n"
+            "  2. 是不是在 Developer Portal 按過 Reset Token？舊 token 會立刻失效\n"
+            "  3. 貼進環境變數時前後是否混到空白、換行或引號\n"
+            "  → Developer Portal → Bot → Reset Token 重新取得並更新 DISCORD_TOKEN"
+        )
+        raise SystemExit(1) from None
+    except discord.PrivilegedIntentsRequired:
+        log.error(
+            "Discord 拒絕連線：未開啟必要的特權 intent。\n"
+            "  → Developer Portal → Bot → Privileged Gateway Intents\n"
+            "  → 開啟 SERVER MEMBERS INTENT（展開角色成員、計算未回覆者需要）"
+        )
+        raise SystemExit(1) from None
     finally:
         log.info("關閉中…")
         await bot.close()

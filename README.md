@@ -67,13 +67,29 @@ ruff check .
 
 ### 2. Turso
 
+**用 Dashboard（Windows 建議走這條）**
+
+Turso CLI 官方只支援 WSL，沒有原生 Windows 版本，所以直接用網頁比較快：
+
+1. [Turso Dashboard](https://app.turso.tech) → `Create Database`
+2. 名稱 `dc-schedule`，**Region 選 Singapore**（或最近的亞洲節點）
+3. 進入該資料庫頁面，複製連線 URL（`libsql://...`）→ `TURSO_DATABASE_URL`
+4. 產生 Auth Token → `TURSO_AUTH_TOKEN`（**只會顯示一次，立刻存好**）
+
+> ⚠️ **資料庫要跟 Render 服務同區**。[render.yaml](render.yaml) 設的是 Singapore，
+> 若資料庫開在別區，每次查詢都要跨區往返 —— 而本專案的 DB 存取是序列化的
+> （單一連線加鎖，見 `src/db/engine.py`），延遲會直接累積成可感受的卡頓。
+
+**用 CLI（macOS / Linux / WSL）**
+
 ```bash
-turso db create dc-schedule
+turso db create dc-schedule --location sin
 turso db show dc-schedule --url          # → TURSO_DATABASE_URL
 turso db tokens create dc-schedule       # → TURSO_AUTH_TOKEN
 ```
 
-Schema 不必手動建立 —— 每次啟動會自動套用 `src/db/migrations/*.sql`。
+**不論哪種方式，schema 都不必手動建立** —— bot 每次啟動會自動套用
+`src/db/migrations/*.sql`，9 張表與索引會自己建好。
 
 ### 3. Render
 

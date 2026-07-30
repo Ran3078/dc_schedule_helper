@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -39,6 +43,46 @@ class Settings(BaseSettings):
     # 新伺服器加入時的預設時區。各伺服器可用 /settings tz 自行覆寫
     default_tz: str = "Asia/Taipei"
     log_level: str = "INFO"
+
+    @field_validator("discord_token", mode="before")
+    @classmethod
+    def _clean_discord_token(cls, v: Any) -> Any:
+        """在送去 Discord 被打回 401 之前，先擋掉最常見的填錯。
+
+        Discord 對錯誤的 token 只回一句 "Improper token has been passed."，
+        看不出是複製錯值、還是貼上時混到空白。這裡把已知的錯法變成清楚的訊息。
+        """
+        if not isinstance(v, str):
+            return v
+
+        # 貼進 Render 環境變數時很容易混到換行或前後空白，Discord 會直接拒收
+        token = v.strip().strip("\"'")
+
+        if not token:
+            raise ValueError("DISCORD_TOKEN 是空的")
+
+        # Application ID 是純數字，是最常被誤填成 token 的值
+        if token.isdigit():
+            raise ValueError(
+                "DISCORD_TOKEN 看起來是 Application ID（純數字）。"
+                "Bot token 要去 Developer Portal → Bot → Reset Token 取得"
+            )
+
+        # Bot token 的格式是三段以 '.' 分隔的字串。不硬性擋（Discord 可能改格式），
+        # 但明顯不像的話先警告，免得又浪費一次 deploy。
+        if token.count(".") != 2:
+            log.warning(
+                "DISCORD_TOKEN 格式不像 bot token（預期三段以 '.' 分隔，實際有 %d 個 '.'）。"
+                "是不是複製到 Client Secret 了？",
+                token.count("."),
+            )
+
+        return token
+
+    @field_validator("turso_auth_token", "turso_database_url", mode="before")
+    @classmethod
+    def _strip_turso_values(cls, v: Any) -> Any:
+        return v.strip().strip("\"'") if isinstance(v, str) else v
 
     @field_validator("default_tz")
     @classmethod

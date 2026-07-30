@@ -7,8 +7,11 @@ from pydantic import ValidationError
 
 from src.config import Settings
 
+# 假 token，格式與真的一致（三段以 '.' 分隔）但無效
+FAKE_TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.xyz789abcDEF"
+
 BASE_ENV = {
-    "DISCORD_TOKEN": "t",
+    "DISCORD_TOKEN": FAKE_TOKEN,
     "DISCORD_APP_ID": "123456789012345678",
     "TURSO_DATABASE_URL": "libsql://example.turso.io",
     "TURSO_AUTH_TOKEN": "tok",
@@ -56,6 +59,56 @@ class TestRequiredFields:
 
         with pytest.raises(ValidationError, match="discord_token"):
             Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+class TestDiscordTokenCleaning:
+    """Discord 對錯誤 token 只回一句 "Improper token has been passed."，
+    看不出是複製錯值還是貼上時混到空白。這些檢查把已知的填錯擋在部署之前。
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            f"  {FAKE_TOKEN}  ",  # 前後空白
+            f"{FAKE_TOKEN}\n",  # 貼上時帶到換行
+            f'"{FAKE_TOKEN}"',  # 自己加了引號
+            f"'{FAKE_TOKEN}'",
+        ],
+        ids=["空白", "換行", "雙引號", "單引號"],
+    )
+    def test_strips_whitespace_and_quotes(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        assert _make(monkeypatch, DISCORD_TOKEN=raw).discord_token == FAKE_TOKEN
+
+    def test_rejects_application_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """把 Application ID 誤填成 token 是最常見的錯，且純數字必定不是 token。"""
+        with pytest.raises(ValidationError, match="Application ID"):
+            _make(monkeypatch, DISCORD_TOKEN="1234567890123456789")
+
+    def test_rejects_empty_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(ValidationError, match="空的"):
+            _make(monkeypatch, DISCORD_TOKEN="   ")
+
+    def test_warns_but_accepts_unusual_shape(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """格式不像就警告，但不硬擋 —— Discord 日後可能改 token 格式。"""
+        with caplog.at_level("WARNING"):
+            settings = _make(monkeypatch, DISCORD_TOKEN="aBcDeF123456")
+        assert settings.discord_token == "aBcDeF123456"
+        assert "Client Secret" in caplog.text
+
+
+class TestTursoValueCleaning:
+    def test_strips_turso_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = _make(
+            monkeypatch,
+            TURSO_AUTH_TOKEN="  eyJhbGci.abc  \n",
+            TURSO_DATABASE_URL=' "libsql://example.turso.io" ',
+        )
+        assert settings.turso_auth_token == "eyJhbGci.abc"
+        assert settings.turso_database_url == "libsql://example.turso.io"
 
 
 class TestTimezoneValidation:
