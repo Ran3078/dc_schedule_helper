@@ -1,0 +1,24 @@
+[project]
+name = "dc-schedule"
+version = "0.1.0"
+description = "Discord 行事曆排程機器人（個人私服自用）"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 所有 DB 測試都是 async，設成 auto 就不必每個測試掛 @pytest.mark.asyncio
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = [
+  "RUF001", # 全形標點在中文註解與訊息裡是正常的
+  "RUF002",
+  "RUF003",
+]

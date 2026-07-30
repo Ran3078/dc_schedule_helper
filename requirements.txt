@@ -1,0 +1,17 @@
+# Discord —— aiohttp 由 discord.py 帶入，保活用的 HTTP server 不需額外套件
+discord.py>=2.6,<3
+
+# Turso / libSQL 官方驅動（sqlite3-like DBAPI，純遠端走 HTTP）
+# 註：不要用 libsql-client 或 libsql-experimental，兩者已於 2025 年棄用歸檔。
+#     也不用 sqlalchemy-libsql —— 其 0.2.0 仍依賴已棄用的 libsql-experimental。
+libsql>=0.1.11,<0.2
+
+# 設定管理：環境變數缺失時開機即失敗
+pydantic-settings>=2.7,<3
+python-dotenv>=1.0
+
+# 時區資料庫。Linux（Render）有系統 tzdata，但 Windows 沒有，
+# 少了這個 zoneinfo.ZoneInfo("Asia/Taipei") 在本機開發時會直接拋
+# ZoneInfoNotFoundError。明確裝上讓本機與雲端行為一致。
+tzdata>=2025.1
+

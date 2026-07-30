@@ -1,0 +1,27 @@
+# 環境變數 —— 絕對不可進版控
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# 本機 SQLite（僅本機測試用，雲端不會有）
+*.db
+*.db-*
+*.sqlite3
+
+# 編輯器 / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

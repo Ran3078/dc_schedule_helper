@@ -1,0 +1,38 @@
+# Render Blueprint —— 免費 Web Service 方案
+#
+# 為什麼 Discord bot 是 "web" 而不是 "worker"：
+#   Render 的 Background Worker 是付費專屬（$7/mo 起），免費方案只有 Web Service。
+#   因此把 bot 與一個極簡 aiohttp /healthz 端點跑在同一個進程，
+#   再用外部 cron（cron-job.org 等）每 10 分鐘 ping /healthz 防止 15 分鐘閒置休眠。
+#
+# 免費額度提醒：750 instance hours/月，全月常駐 31 天 = 744h。
+#   → 同一個 workspace 不能再有其他免費服務，否則會超額被停。
+
+services:
+  - type: web
+    name: dc-schedule-bot
+    runtime: python
+    plan: free
+    region: singapore # 離台灣最近，降低 gateway 延遲
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.main
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      # 以下皆為機密，sync: false 表示需在 Render Dashboard 手動填入
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_APP_ID
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: DEFAULT_TZ
+        value: Asia/Taipei
+      - key: LOG_LEVEL
+        value: INFO
