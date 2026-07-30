@@ -26,7 +26,9 @@ services:
         sync: false
       - key: DISCORD_APP_ID
         sync: false
-      - key: GUILD_ID
+      # 選填。多伺服器模式下指令走 global 註冊；填了這個會對該伺服器
+      # 額外做一次即時同步，省下 global 快取的最長 1 小時等待。
+      - key: DEV_GUILD_ID
         sync: false
       - key: TURSO_DATABASE_URL
         sync: false

@@ -1,6 +1,6 @@
 # Discord 行事曆排程機器人 — 規劃書
 
-> 用途：個人私用伺服器（單一 guild）
+> 用途：自用為主，但**支援多伺服器**（每個伺服器設定與資料獨立）
 > 技術棧：Python + discord.py / Turso / Render
 > 最後更新：2026-07-30（決策已定案，M0 程式完成）
 >
@@ -372,7 +372,7 @@ Migration 不放在 `buildCommand`，而是在 `src/main.py` 啟動時自動套�
 
 `/healthz` 與 `/readyz` 刻意分開：Render 的 health check 走 `/healthz`，它只證明進程活著、不碰 DB、不管 gateway 是否已連上 —— 啟動初期 gateway 尚未連線，若此時回 503 會讓 Render 誤判 deploy 失敗。深度檢查放在 `/readyz`。
 
-**指令註冊用 guild-scoped**（`GUILD_ID`）而非 global — 私用伺服器不需要 global，且 guild-scoped 更新是**即時生效**，global 有最長 1 小時快取。
+**指令註冊用 global**（多伺服器必須如此），另以選填的 `DEV_GUILD_ID` 對開發伺服器額外做一次 guild-scoped 同步換取即時生效 —— global 有最長 1 小時快取，開發期間每改一次指令定義都要等，很痛。詳見 §11。
 
 **Render 免費方案的已知坑**：
 - 每次 deploy 會重啟 → gateway 重連（幾秒，可接受，因為排程狀態在 DB）
@@ -403,9 +403,9 @@ dc_schedule/
 │   │   ├── migrate.py           ✅ 編號 SQL migration runner
 │   │   ├── migrations/
 │   │   │   └── 001_init.sql     ✅ 9 張表 + 索引
-│   │   └── repo.py                 各表的查詢函式（M1 起）
+│   │   └── repo.py              ✅ ★ 多伺服器紀律 + guild_settings + 歸屬檢查
 │   ├── bot/
-│   │   ├── client.py            ✅ Bot 子類、intents、guild-scoped 指令同步
+│   │   ├── client.py            ✅ Bot 子類、intents、global+dev 指令同步、on_guild_join
 │   │   ├── cogs/
 │   │   │   ├── meta.py          ✅ /ping（gateway + DB 診斷）
 │   │   │   ├── events.py           /event create|list|info|edit|cancel|invite|remind|ping
@@ -424,6 +424,7 @@ dc_schedule/
 │   │   └── native_events.py        Discord 原生活動同步
 │   ├── lib/
 │   │   ├── ids.py               ✅ 短 ID + custom_id 編解碼（含 100 字元上限檢查）
+│   │   ├── clock.py             ✅ now_ms()，集中時間取得以便測試
 │   │   ├── timeparse.py            時間解析 + Discord 時間戳
 │   │   └── mentions.py             allowed_mentions 白名單
 │   ├── i18n/                       zh_tw.py
@@ -432,6 +433,8 @@ dc_schedule/
 └── tests/
     ├── conftest.py              ✅ 本機 SQLite fixture，不需 Turso 憑證
     ├── test_db.py               ✅ migration 冪等、rowcount 樂觀鎖、單選投票語意
+    ├── test_config.py           ✅ dev_guild_id 選填語意、必填欄位、時區驗證
+    ├── test_multi_guild.py      ✅ ★ 伺服器隔離（A 的活動不能出現在 B）
     ├── test_timeparse.py           解析與時區
     └── test_polls.py               單選/複選票數正確性
 ```
@@ -465,10 +468,46 @@ M0–M7 涵蓋你列的所有需求。
 | 語言 | **Python + discord.py** |
 | 投票 | **自製為主**（無選項上限、可改票、可匿名、票數入庫、可綁定活動），原生 `discord.Poll` 當 `native:true` 選配 |
 | 部署 | **Render 免費 Web Service + cron-job.org 保活**（$0），穩定後可升 Background Worker $7/mo |
+| 多伺服器 | **支援**。指令 global 註冊，`guild_settings` 每伺服器獨立，`on_guild_join` 自動建立。詳見 §11 |
 | 原生活動分頁同步 | **納入 MVP**（M6）：單向同步 + 原生「有興趣」映射回 yes |
 | 自然語言時間解析 | **不進 MVP**，Phase 2 再做。MVP 只收固定格式 |
 | 名額上限 / 候補名單 | **不進 MVP**，Phase 2 再做。`capacity` 欄位已在 schema 預留 |
 | git | 已 `git init` |
+
+---
+
+## 11. 多伺服器設計
+
+資料模型從一開始就是多伺服器就緒的，因此開放多伺服器不需要改 schema：
+
+- `guild_settings.guild_id` 是主鍵 —— 公告頻道、時區、預設提醒時距、誰能開活動、是否允許 @everyone，全部各伺服器獨立
+- `events.guild_id`、`polls.guild_id` 皆 `NOT NULL`，並有 `(guild_id, starts_at_utc)` 複合索引
+- 子表（`rsvps` / `poll_votes` / `poll_options` / `event_invitees` / `reminders`）不帶 `guild_id`，靠母體界定範圍
+
+### 11.1 真正的成本在程式紀律，不在 schema
+
+改成多伺服器只動了 2 個檔案，但**維持多伺服器正確性的成本分散在 M1–M7 的每一個查詢裡**。這類錯誤不會讓程式報錯，只會安靜地把別的伺服器的活動列出來 —— 靠人工 review 很難抓，所以規則寫死在 [src/db/repo.py](src/db/repo.py) 的模組註解與 [README.md](README.md)：
+
+1. 讀取活動 / 投票的函式，`guild_id` 一律必填且必須進 WHERE。**不提供「不分伺服器」的查詢版本**
+2. `guild_id` 一律來自 `interaction.guild_id`，絕不從設定檔取
+3. 操作子表前必須先用 `owned_event()` / `owned_poll()` 確認母體歸屬 —— 否則 A 伺服器的人能用猜到的 ID 改 B 伺服器的資料
+4. Discord ID 是整數、DB 欄位是 TEXT，傳入前一律 `str()`（repo 層已代為處理）
+5. 需要伺服器情境的指令要加 `@app_commands.guild_only()`，否則 DM 中 `interaction.guild_id` 是 `None`
+
+[tests/test_multi_guild.py](tests/test_multi_guild.py) 用「A 的活動不能出現在 B」這類測試把上述規則釘住。每新增一個查詢函式就補一條對應的隔離測試。
+
+### 11.2 指令同步的取捨
+
+多伺服器必須 global 註冊，但 Discord 對 global 指令有快取，改動後最長 1 小時才在各伺服器生效。因此 `DEV_GUILD_ID`（選填）會對指定伺服器額外做一次 guild-scoped 同步換取即時生效。開發伺服器會同時有兩份註冊，Discord 的行為是 guild-scoped 優先，不會重複。
+
+### 11.3 兩個規模天花板
+
+| 門檻 | 影響 |
+|------|------|
+| 100 個伺服器 | Server Members Intent 需向 Discord 申請審核 |
+| 數十個伺服器 | 成員快取吃 RAM，Render 免費方案只有 512MB。屆時改 `chunk_guilds_at_startup=False` + 按需 fetch |
+
+另外 Discord 原生活動上限 100 個是**每伺服器**計算，所以 M6 不受多伺服器影響。
 
 ---
 

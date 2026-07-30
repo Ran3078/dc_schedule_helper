@@ -1,8 +1,7 @@
 # dc_schedule
 
-Discord 行事曆排程機器人，個人私服自用。自架取代 Sesh / Apollo / Raid-Helper。
+Discord 行事曆排程機器人。自架取代 Sesh / Apollo / Raid-Helper。**支援多伺服器**，每個伺服器有獨立的設定與資料。
 
-完整規劃見 [PLAN.md](PLAN.md)。
 
 **目前進度：M0（骨架與部署管線）完成。** 可用指令：`/ping`。
 
@@ -62,8 +61,9 @@ ruff check .
    - Bot Permissions：`Send Messages`、`Embed Links`、`Read Message History`、
      `Create Public Threads`、`Mention Everyone`（要 @everyone 才需要）、
      `Manage Events`（同步原生活動分頁需要）
-6. 用產生的連結把 bot 邀進你的伺服器
-7. Discord 設定 → 進階 → 開啟開發者模式 → 右鍵伺服器 → 複製伺服器 ID → `GUILD_ID`
+6. 用產生的連結把 bot 邀進伺服器（可邀進多個，每個伺服器資料獨立）
+7. （選填）Discord 設定 → 進階 → 開啟開發者模式 → 右鍵你的主要伺服器 → 複製伺服器 ID
+   → `DEV_GUILD_ID`。作用見下方「多伺服器」段落
 
 ### 2. Turso
 
@@ -79,8 +79,8 @@ Schema 不必手動建立 —— 每次啟動會自動套用 `src/db/migrations/
 
 1. 把這個 repo 推到 GitHub
 2. Render → New → Blueprint → 選這個 repo（會讀 [render.yaml](render.yaml)）
-3. 在 Dashboard 填入 5 個機密環境變數：`DISCORD_TOKEN`、`DISCORD_APP_ID`、
-   `GUILD_ID`、`TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`
+3. 在 Dashboard 填入機密環境變數：`DISCORD_TOKEN`、`DISCORD_APP_ID`、
+   `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`，以及選填的 `DEV_GUILD_ID`
 4. Deploy
 
 ### 4. 保活設定（**必做，不是選配**）
@@ -132,8 +132,50 @@ Render 免費方案是 **750 instance hours / 月 / workspace**，而全月常�
 5. **Windows 本機開發需要 `tzdata` 套件。** Linux 有系統時區資料庫，Windows 沒有，
    少了它 `ZoneInfo("Asia/Taipei")` 會直接拋錯。已列在 requirements.txt。
 
-6. **指令是 guild-scoped 註冊**（用 `GUILD_ID`）。更新即時生效；global 註冊有最長
-   1 小時的傳播延遲。
+6. **每個查詢都必須以 `guild_id` 為界。** 見下方「多伺服器」段落 —— 這是本專案最容易
+   寫錯、也最難事後補救的一條。
+
+---
+
+## 多伺服器
+
+Bot 可同時服務多個伺服器，每個伺服器有獨立的 `guild_settings`（公告頻道、時區、
+預設提醒時距、誰能開活動、是否允許 @everyone）與獨立的活動 / 投票資料。
+加入新伺服器時 `on_guild_join` 會自動建立預設設定。
+
+### ★ 寫程式時必須遵守的紀律
+
+**每一個查詢都必須以 `guild_id` 為界。** 這類漏洞不會讓程式報錯，只會安靜地把別的
+伺服器的活動列給你看 —— 靠人工 review 很難抓，所以規則要硬。
+
+1. 讀取活動 / 投票的函式，`guild_id` 一律是**必填參數**，且必須出現在 WHERE 子句。
+   **不要提供「不分伺服器」的查詢版本** —— 那種函式一旦存在，早晚會有人誤用。
+2. `guild_id` 一律來自 `interaction.guild_id`，**絕不從設定檔取**。
+   `DEV_GUILD_ID` 只用於指令同步，與資料查詢完全無關。
+3. 操作子表（`rsvps` / `poll_votes` / `poll_options` / `event_invitees` / `reminders`）
+   前，必須先確認其母體屬於當前伺服器 —— 用 [src/db/repo.py](src/db/repo.py) 的
+   `owned_event()` / `owned_poll()`。子表沒有 `guild_id` 欄位，只靠母體界定範圍，
+   少了這層檢查，A 伺服器的人就能用猜到的 ID 改 B 伺服器的資料。
+4. Discord ID 是 64-bit 整數，DB 欄位型別是 TEXT。傳入前一律 `str()`，
+   否則 `WHERE guild_id = 123` 與存進去的 `'123'` 比不出結果。repo 層已代為處理。
+5. 需要伺服器情境的指令要加 `@app_commands.guild_only()` —— 否則在 DM 中呼叫時
+   `interaction.guild_id` 會是 `None`。
+
+每新增一個查詢函式，就在 [tests/test_multi_guild.py](tests/test_multi_guild.py) 補一條
+對應的隔離測試。
+
+### 指令同步的取捨
+
+多伺服器必須用 global 註冊，但 Discord 對 global 指令有快取，改動後**最長要等 1 小時**
+才在各伺服器生效。填了 `DEV_GUILD_ID` 之後，會對該伺服器額外做一次 guild-scoped
+同步（即時生效），開發時就不必等。開發伺服器會同時有 global 與 guild 兩份註冊，
+Discord 的行為是 guild-scoped 優先，不會出現重複指令。
+
+### 兩個規模天花板
+
+- **超過 100 個伺服器**：Server Members Intent 需要向 Discord 申請審核
+- **成員快取吃 RAM**：Render 免費方案只有 512MB。幾十個伺服器就要評估改用
+  `chunk_guilds_at_startup=False` + 按需 fetch
 
 ---
 

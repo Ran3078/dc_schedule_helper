@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from src.config import Settings
+from src.db import repo
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +21,12 @@ class ScheduleBot(commands.Bot):
         # 不需要 message_content（特權 intent）—— 全部走 slash 指令，不讀任何聊天內容。
         # members 則是必要的：把「參加對象」裡的角色展開成成員清單、算出誰還沒回覆，
         # 都需要成員快取。這是特權 intent，要去 Developer Portal → Bot →
-        # Privileged Gateway Intents 開啟 SERVER MEMBERS INTENT（<100 伺服器無需審核）。
+        # Privileged Gateway Intents 開啟 SERVER MEMBERS INTENT。
+        #
+        # 多伺服器的兩個天花板（超過才需要處理，目前不用）：
+        #   * 超過 100 個伺服器時，特權 intent 需要向 Discord 申請審核
+        #   * 成員快取吃 RAM，Render 免費方案只有 512MB；幾十個伺服器就要評估
+        #     改用 chunk_guilds_at_startup=False + 按需 fetch
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = False
@@ -34,7 +40,11 @@ class ScheduleBot(commands.Bot):
             application_id=settings.discord_app_id,
         )
         self.settings = settings
-        self.guild_object = discord.Object(id=settings.guild_id)
+        self.dev_guild = (
+            discord.Object(id=settings.dev_guild_id)
+            if settings.dev_guild_id is not None
+            else None
+        )
 
     async def setup_hook(self) -> None:
         for cog in INITIAL_COGS:
@@ -45,11 +55,29 @@ class ScheduleBot(commands.Bot):
         # 重啟後舊訊息上的按鈕才還按得動。M3 起會有實際內容。
         self._register_persistent_views()
 
-        # 指令一律 guild-scoped：私服不需要 global，且 guild-scoped 更新即時生效，
-        # global 有最長 1 小時的傳播延遲。
-        self.tree.copy_global_to(guild=self.guild_object)
-        synced = await self.tree.sync(guild=self.guild_object)
-        log.info("已同步 %d 個指令到 guild %s", len(synced), self.settings.guild_id)
+        await self._sync_commands()
+
+    async def _sync_commands(self) -> None:
+        """指令同步：global 為主，開發伺服器額外做一次即時同步。
+
+        多伺服器必須用 global 註冊，但 Discord 對 global 指令有快取，改動後最長要等
+        1 小時才在各伺服器生效。因此若設了 DEV_GUILD_ID，就對該伺服器再做一次
+        guild-scoped 同步 —— guild-scoped 是即時生效的，開發時不必等。
+
+        副作用：開發伺服器會同時看到 global 與 guild 兩份註冊。Discord 的行為是
+        guild-scoped 優先，不會出現重複的指令。
+        """
+        synced_global = await self.tree.sync()
+        log.info("已 global 同步 %d 個指令（各伺服器最長 1 小時內生效）", len(synced_global))
+
+        if self.dev_guild is not None:
+            self.tree.copy_global_to(guild=self.dev_guild)
+            synced_dev = await self.tree.sync(guild=self.dev_guild)
+            log.info(
+                "已對開發伺服器 %s 同步 %d 個指令（即時生效）",
+                self.settings.dev_guild_id,
+                len(synced_dev),
+            )
 
     def _register_persistent_views(self) -> None:
         # M3: self.add_view(RsvpView())
@@ -59,11 +87,26 @@ class ScheduleBot(commands.Bot):
     async def on_ready(self) -> None:
         assert self.user is not None
         log.info("已登入：%s (id=%s)", self.user, self.user.id)
-        guild = self.get_guild(self.settings.guild_id)
-        if guild is None:
-            log.warning(
-                "找不到 guild %s —— bot 可能還沒被邀請進該伺服器，或 GUILD_ID 填錯",
-                self.settings.guild_id,
-            )
-        else:
-            log.info("目標伺服器：%s（%d 位成員）", guild.name, guild.member_count or -1)
+
+        # on_ready 可能因重連而多次觸發，ensure_guild 是 idempotent 的，重跑無妨。
+        for guild in self.guilds:
+            await repo.ensure_guild(guild.id, self.settings.default_tz)
+
+        log.info(
+            "服務中的伺服器共 %d 個：%s",
+            len(self.guilds),
+            ", ".join(f"{g.name}({g.id})" for g in self.guilds) or "（尚未加入任何伺服器）",
+        )
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """加入新伺服器時建立該伺服器的預設設定。"""
+        await repo.ensure_guild(guild.id, self.settings.default_tz)
+        log.info("已加入新伺服器：%s (%s)", guild.name, guild.id)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        """被移出伺服器。
+
+        刻意**不刪除**該伺服器的資料 —— 若日後又被邀回來，活動與設定還在。
+        資料量極小（本專案一個伺服器的資料是 KB 量級），沒有清理的必要。
+        """
+        log.info("已離開伺服器：%s (%s)，資料保留", guild.name, guild.id)

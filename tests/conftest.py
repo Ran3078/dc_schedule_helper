@@ -15,7 +15,7 @@ def _set_test_env(db_path: str) -> None:
     os.environ.update(
         DISCORD_TOKEN="test-token",
         DISCORD_APP_ID="123456789012345678",
-        GUILD_ID="987654321098765432",
+        DEV_GUILD_ID="987654321098765432",
         TURSO_DATABASE_URL=db_path,
         TURSO_AUTH_TOKEN="",
         DEFAULT_TZ="Asia/Taipei",
