@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.db.migrate import _split_statements, run_migrations
+from src.db.migrate import MIGRATIONS_DIR, _split_statements, run_migrations
 from src.lib.ids import build_custom_id, new_id, parse_custom_id
 
 NOW = 1785000000000  # 固定 epoch，避免測試受當下時間影響
@@ -65,10 +65,15 @@ class TestMigrations:
         assert "idx_reminders_due" in {r["name"] for r in rows}
 
     async def test_is_idempotent(self, db) -> None:
-        """Render 每次 deploy 都跑 migration，重跑不能出錯也不能重複記錄。"""
+        """Render 每次 deploy 都跑 migration，重跑不能出錯也不能重複記錄。
+
+        預期筆數是「目前有幾個 migration 檔」，不是寫死的數字 —— 這樣新增
+        migration 檔時不用回頭改這條測試的魔術數字。
+        """
         await run_migrations()
         await run_migrations()
-        assert await db.query_scalar("SELECT COUNT(*) FROM _migrations") == 1
+        expected = len(list(MIGRATIONS_DIR.glob("*.sql")))
+        assert await db.query_scalar("SELECT COUNT(*) FROM _migrations") == expected
 
 
 class TestQueries:

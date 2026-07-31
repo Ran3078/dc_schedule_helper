@@ -10,10 +10,13 @@ import os
 
 import pytest
 
+# 假 token，格式與真的一致（三段以 '.' 分隔）好通過 config 的形狀檢查
+FAKE_TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.xyz789abcDEF"
+
 
 def _set_test_env(db_path: str) -> None:
     os.environ.update(
-        DISCORD_TOKEN="test-token",
+        DISCORD_TOKEN=FAKE_TOKEN,
         DISCORD_APP_ID="123456789012345678",
         DEV_GUILD_ID="987654321098765432",
         TURSO_DATABASE_URL=db_path,

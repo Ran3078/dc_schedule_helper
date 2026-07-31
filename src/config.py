@@ -68,12 +68,25 @@ class Settings(BaseSettings):
                 "Bot token 要去 Developer Portal → Bot → Reset Token 取得"
             )
 
-        # Bot token 的格式是三段以 '.' 分隔的字串。不硬性擋（Discord 可能改格式），
-        # 但明顯不像的話先警告，免得又浪費一次 deploy。
+        # Bot token 一定是三段以 '.' 分隔。完全沒有句點的值必定不是 token ——
+        # 最常見的是 Client Secret（32 字元英數字），直接擋下並講清楚。
+        if "." not in token:
+            raise ValueError(
+                f"DISCORD_TOKEN 不含任何 '.'，不是有效的 bot token"
+                f"（長度 {len(token)}）。"
+                + (
+                    "32 字元的英數字是 Client Secret。"
+                    if len(token) == 32
+                    else ""
+                )
+                + "Bot token 形如 MTIz...ABC.GhIjKl.xyz789，約 70 字元，"
+                "要去 Developer Portal → Bot → Reset Token 取得"
+            )
+
+        # 段數不對就警告但放行 —— Discord 日後可能調整格式，不該硬擋死
         if token.count(".") != 2:
             log.warning(
-                "DISCORD_TOKEN 格式不像 bot token（預期三段以 '.' 分隔，實際有 %d 個 '.'）。"
-                "是不是複製到 Client Secret 了？",
+                "DISCORD_TOKEN 格式不太像 bot token（預期三段以 '.' 分隔，實際有 %d 個 '.'）",
                 token.count("."),
             )
 

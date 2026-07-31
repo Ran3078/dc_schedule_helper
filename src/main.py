@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 
 
 def setup_logging(level: str) -> None:
+    # Windows console 預設是 cp950，中文 log 會變成亂碼。
+    # Render 跑 Linux 本來就是 UTF-8，這行只影響本機開發。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",

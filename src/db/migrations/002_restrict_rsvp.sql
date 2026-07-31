@@ -1,0 +1,12 @@
+-- 002_restrict_rsvp: 活動可設定「僅限受邀對象回覆」
+--
+-- 預設 0（開放所有看得到公告的人回覆）— 這是 M3 原本的行為，加這個欄位
+-- 不改變任何既有活動。開啟後 RsvpButton 會檢查按按鈕的人是否落在該活動的
+-- 邀請名單展開後的成員集合裡（見 domain/invitees.py），不在名單內就拒絕
+-- 寫入並提示「僅限受邀對象回覆」。
+--
+-- SQLite 的 ALTER TABLE ADD COLUMN 沒有 IF NOT EXISTS 語法；這裡的冪等性
+-- 靠 migrate.py 的 _migrations 表保證（每個檔名只套用一次），不是靠 SQL
+-- 本身可重複執行 —— 這點跟其他 migration 檔用 CREATE TABLE IF NOT EXISTS
+-- 的作法不同，特此註明。
+ALTER TABLE events ADD COLUMN restrict_rsvp INTEGER NOT NULL DEFAULT 0;

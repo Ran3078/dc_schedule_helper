@@ -7,13 +7,14 @@ import logging
 import discord
 from discord.ext import commands
 
+from src.bot.views_rsvp import RsvpButton
 from src.config import Settings
 from src.db import repo
 
 log = logging.getLogger(__name__)
 
-# 隨里程碑逐步加入：events / polls / settings / scheduler
-INITIAL_COGS: tuple[str, ...] = ("src.bot.cogs.meta",)
+# 隨里程碑逐步加入：polls / settings / scheduler
+INITIAL_COGS: tuple[str, ...] = ("src.bot.cogs.meta", "src.bot.cogs.events")
 
 
 class ScheduleBot(commands.Bot):
@@ -51,9 +52,11 @@ class ScheduleBot(commands.Bot):
             await self.load_extension(cog)
             log.info("已載入 cog: %s", cog)
 
-        # 持久化 View 在此註冊（timeout=None + 固定 custom_id），
-        # 重啟後舊訊息上的按鈕才還按得動。M3 起會有實際內容。
-        self._register_persistent_views()
+        # 持久化元件在此註冊。RsvpButton 用 DynamicItem（custom_id 帶
+        # event_id，每則公告訊息都不同），走 add_dynamic_items 而非
+        # add_view —— 不需要在啟動時逐一重新綁定每則舊訊息，Discord 每次
+        # 互動都會把訊息當下的元件結構送回來，靠 regex 樣板比對即時重建。
+        self.add_dynamic_items(RsvpButton)
 
         await self._sync_commands()
 
@@ -79,10 +82,8 @@ class ScheduleBot(commands.Bot):
                 len(synced_dev),
             )
 
-    def _register_persistent_views(self) -> None:
-        # M3: self.add_view(RsvpView())
-        # M5: self.add_view(PollView())
-        pass
+    # M5 起若有其他持久化元件（例如投票按鈕），一樣在 setup_hook 用
+    # add_dynamic_items 註冊，不需要額外的輔助方法。
 
     async def on_ready(self) -> None:
         assert self.user is not None

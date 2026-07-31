@@ -90,14 +90,26 @@ class TestDiscordTokenCleaning:
         with pytest.raises(ValidationError, match="空的"):
             _make(monkeypatch, DISCORD_TOKEN="   ")
 
-    def test_warns_but_accepts_unusual_shape(
+    def test_rejects_token_without_dots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bot token 必定是三段以 '.' 分隔，沒有句點的值不可能是 token。"""
+        with pytest.raises(ValidationError, match="不含任何"):
+            _make(monkeypatch, DISCORD_TOKEN="aBcDeF123456")
+
+    def test_names_client_secret_for_32_char_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Client Secret 剛好 32 字元英數字 —— 實際踩過的坑，直接點名。"""
+        with pytest.raises(ValidationError, match="Client Secret"):
+            _make(monkeypatch, DISCORD_TOKEN="a" * 32)
+
+    def test_warns_but_accepts_unusual_segment_count(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """格式不像就警告，但不硬擋 —— Discord 日後可能改 token 格式。"""
+        """段數不對只警告不硬擋 —— Discord 日後可能調整 token 格式。"""
         with caplog.at_level("WARNING"):
-            settings = _make(monkeypatch, DISCORD_TOKEN="aBcDeF123456")
-        assert settings.discord_token == "aBcDeF123456"
-        assert "Client Secret" in caplog.text
+            settings = _make(monkeypatch, DISCORD_TOKEN="aaa.bbb")
+        assert settings.discord_token == "aaa.bbb"
+        assert "不太像 bot token" in caplog.text
 
 
 class TestTursoValueCleaning:

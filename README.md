@@ -57,11 +57,24 @@ ruff check .
    - 伺服器數 <100 無需審核，直接開就好
    - **不需要** MESSAGE CONTENT INTENT —— 本 bot 全走 slash 指令，不讀任何聊天內容
 5. **OAuth2 → URL Generator**：
-   - Scopes：`bot`、`applications.commands`
-   - Bot Permissions：`Send Messages`、`Embed Links`、`Read Message History`、
-     `Create Public Threads`、`Mention Everyone`（要 @everyone 才需要）、
+   - Scopes：**必須同時勾 `bot` 和 `applications.commands`**
+   - Bot Permissions：`View Channels`、`Send Messages`、`Embed Links`、
+     `Read Message History`、`Add Reactions`、`Create Public Threads`、
+     `Send Messages in Threads`、`Mention Everyone`（要 @everyone 才需要）、
      `Manage Events`（同步原生活動分頁需要）
+
+   > ⚠️ **只勾 `applications.commands` 是最容易踩的坑**：指令會被裝進伺服器、
+   > `/ping` 也能用，但 **bot 本身沒有加入伺服器**，不會出現在成員清單裡。
+   > 症狀是 `bot.guilds` 為空、`on_ready` 建不出 `guild_settings`，
+   > 且無法發訊息 / tag 人 / 展開角色成員 / 建立原生活動。
+   >
+   > 快速產生正確連結（把 `<APP_ID>` 換成你的 Application ID）：
+   > ```
+   > https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=317827796032
+   > ```
+
 6. 用產生的連結把 bot 邀進伺服器（可邀進多個，每個伺服器資料獨立）
+   - 邀請後在伺服器成員清單裡應該看得到 bot，看不到就是 scope 少勾了
 7. （選填）Discord 設定 → 進階 → 開啟開發者模式 → 右鍵你的主要伺服器 → 複製伺服器 ID
    → `DEV_GUILD_ID`。作用見下方「多伺服器」段落
 
