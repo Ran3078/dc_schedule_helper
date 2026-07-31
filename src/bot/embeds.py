@@ -139,6 +139,34 @@ def build_event_embed(
     return embed
 
 
+def build_reminder_embed(reminder: Row) -> discord.Embed:
+    """提醒訊息的卡片。`reminder` 是 `repo.list_due_reminders()` 那個 JOIN
+    查詢的一列，同時帶著提醒本身與活動的欄位（title/starts_at_utc/location/
+    message_id/guild_id/channel_id）。
+
+    時間刻意用 Discord 動態時間戳 `<t:...:R>` 而不是寫死「還有 X 分鐘」這種
+    文字 —— 這樣不管提醒實際送達時間有沒有延遲（例如 bot 剛從停機恢復、
+    補發一則逾期提醒），客戶端顯示的相對時間永遠正確，不需要為「準時送達」
+    和「延遲補發」兩種情境各寫一套文案（見 domain/reminders.py 的逾期補償
+    規則）。
+    """
+    description = f"{discord_timestamp(reminder['starts_at_utc'], 'R')} 開始"
+    if reminder.get("location"):
+        description += f"\n📍 {reminder['location']}"
+    if reminder.get("message_id") and reminder.get("channel_id") and reminder.get("guild_id"):
+        jump_url = (
+            f"https://discord.com/channels/"
+            f"{reminder['guild_id']}/{reminder['channel_id']}/{reminder['message_id']}"
+        )
+        description += f"\n[查看活動公告]({jump_url})"
+
+    return discord.Embed(
+        title=f"⏰ 提醒：{reminder['title']}",
+        description=description,
+        colour=discord.Colour.orange(),
+    )
+
+
 def build_event_list_embed(events: list[Row], *, title: str) -> discord.Embed:
     """`/event list` 用的簡要清單，每個活動一行。"""
     embed = discord.Embed(title=title, colour=discord.Colour.blurple())

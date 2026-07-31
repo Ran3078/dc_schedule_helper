@@ -18,6 +18,7 @@ from src.bot.embeds import build_event_embed
 from src.bot.modals import PendingEvent
 from src.bot.views_rsvp import build_rsvp_view
 from src.db import repo
+from src.domain.reminders import parse_default_reminders
 from src.domain.rsvp import RsvpSummary, build_rsvp_summary
 from src.lib.mentions import build_allowed_mentions, build_mention_content
 
@@ -84,6 +85,15 @@ class ConfirmEventView(discord.ui.View):
 
     async def _confirm_impl(self, interaction: discord.Interaction) -> None:
         pending = self.pending
+
+        # 預設提醒（1天/1小時/10分前，可由 /settings 調整）在活動建立當下
+        # 就一併排定，而不是等使用者另外操作 —— 這是 M4 的核心承諾：建活動
+        # 就自動有提醒，不用額外一步。
+        guild_settings = await repo.get_guild_settings(pending.guild_id)
+        reminder_offsets = parse_default_reminders(
+            guild_settings["default_reminders"] if guild_settings else None
+        )
+
         await repo.create_event(
             event_id=self.event_id,
             guild_id=pending.guild_id,
@@ -99,6 +109,7 @@ class ConfirmEventView(discord.ui.View):
             role_ids=self.role_ids,
             tag_everyone=self.tag_everyone,
             restrict_rsvp=self.restrict_rsvp,
+            reminder_offsets_min=reminder_offsets,
         )
         event_row = await repo.owned_event(self.event_id, pending.guild_id)
         assert event_row is not None, "剛寫入的活動查不到，DB 層有問題"

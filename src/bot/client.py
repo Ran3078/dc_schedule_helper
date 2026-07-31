@@ -13,8 +13,12 @@ from src.db import repo
 
 log = logging.getLogger(__name__)
 
-# 隨里程碑逐步加入：polls / settings / scheduler
-INITIAL_COGS: tuple[str, ...] = ("src.bot.cogs.meta", "src.bot.cogs.events")
+# 隨里程碑逐步加入：polls / settings
+INITIAL_COGS: tuple[str, ...] = (
+    "src.bot.cogs.meta",
+    "src.bot.cogs.events",
+    "src.bot.cogs.scheduler",
+)
 
 
 class ScheduleBot(commands.Bot):

@@ -396,3 +396,54 @@ class TestConfirmWithRestrictRsvp:
         _, kwargs = interaction.channel.send.call_args
         field = next(f for f in kwargs["embed"].fields if "邀請對象" in f.name)
         assert "僅限以下對象回覆" in field.name
+
+
+class TestConfirmSchedulesDefaultReminders:
+    """發布活動時要自動排定預設提醒（1天/1小時/10分前，可由 guild_settings
+    的 default_reminders 調整），不必使用者另外操作 —— 這是 M4 的核心承諾。
+    """
+
+    async def test_schedules_reminder_within_default_offsets(self, db) -> None:
+        """pending 只設定 1 小時後開始，預設的 1440/60 分鐘偏移量都會落在
+        過去而被跳過，只剩 10 分鐘偏移量會被實際排定。"""
+        pending = _make_pending(starts_at_utc=now_ms() + 3_600_000)
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        rows = await db.query_all(
+            "SELECT offset_min FROM reminders WHERE event_id = ?", (view.event_id,)
+        )
+        assert [r["offset_min"] for r in rows] == [10]
+
+    async def test_uses_guild_specific_default_reminders_setting(self, db) -> None:
+        await repo.ensure_guild(GUILD_ID, "Asia/Taipei")
+        await db.execute(
+            "UPDATE guild_settings SET default_reminders = ? WHERE guild_id = ?",
+            ("30,5", str(GUILD_ID)),
+        )
+        pending = _make_pending(starts_at_utc=now_ms() + 3_600_000)
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        rows = await db.query_all(
+            "SELECT offset_min FROM reminders WHERE event_id = ? ORDER BY offset_min",
+            (view.event_id,),
+        )
+        assert [r["offset_min"] for r in rows] == [5, 30]
+
+    async def test_far_future_event_schedules_all_three_default_reminders(self, db) -> None:
+        pending = _make_pending(starts_at_utc=now_ms() + 30 * 24 * 3_600_000)  # 30 天後
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        rows = await db.query_all(
+            "SELECT offset_min FROM reminders WHERE event_id = ? ORDER BY offset_min",
+            (view.event_id,),
+        )
+        assert [r["offset_min"] for r in rows] == [10, 60, 1440]

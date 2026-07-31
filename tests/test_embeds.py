@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from src.bot.embeds import build_event_embed, build_event_list_embed
+from typing import ClassVar
+
+from src.bot.embeds import build_event_embed, build_event_list_embed, build_reminder_embed
 from src.domain.rsvp import RsvpSummary
 
 BASE_EVENT = {
@@ -188,3 +190,47 @@ class TestBuildEventListEmbed:
     def test_uses_provided_title(self) -> None:
         embed = build_event_list_embed([], title="🙋 我建立的活動")
         assert embed.title == "🙋 我建立的活動"
+
+
+class TestBuildReminderEmbed:
+    BASE_REMINDER: ClassVar[dict] = {
+        "title": "週五團練",
+        "starts_at_utc": 1754049600000,
+        "location": None,
+        "message_id": None,
+        "channel_id": None,
+        "guild_id": None,
+    }
+
+    def _reminder(self, **overrides):
+        return {**self.BASE_REMINDER, **overrides}
+
+    def test_title_includes_event_title(self) -> None:
+        embed = build_reminder_embed(self._reminder(title="週五團練"))
+        assert "週五團練" in embed.title
+        assert "⏰" in embed.title
+
+    def test_description_includes_relative_timestamp(self) -> None:
+        embed = build_reminder_embed(self._reminder())
+        assert "<t:1754049600:R>" in embed.description
+
+    def test_omits_location_when_not_set(self) -> None:
+        embed = build_reminder_embed(self._reminder(location=None))
+        assert "📍" not in embed.description
+
+    def test_includes_location_when_set(self) -> None:
+        embed = build_reminder_embed(self._reminder(location="語音頻道"))
+        assert "📍 語音頻道" in embed.description
+
+    def test_omits_jump_link_when_message_id_missing(self) -> None:
+        embed = build_reminder_embed(
+            self._reminder(message_id=None, channel_id="c1", guild_id="g1")
+        )
+        assert "查看活動公告" not in embed.description
+
+    def test_includes_jump_link_when_all_ids_present(self) -> None:
+        embed = build_reminder_embed(
+            self._reminder(message_id="m1", channel_id="c1", guild_id="g1")
+        )
+        assert "https://discord.com/channels/g1/c1/m1" in embed.description
+        assert "查看活動公告" in embed.description

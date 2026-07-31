@@ -13,6 +13,11 @@
    只靠母體界定範圍 —— 少了這層檢查，A 伺服器的人就能用猜到的 ID 改 B 伺服器的資料。
 4. Discord 的 ID 是 64-bit 整數，但 DB 欄位型別是 TEXT。傳入前一律 `str()`，
    否則 `WHERE guild_id = 123` 與存進去的 `'123'` 比不出結果。
+5. 唯一的例外是 `list_due_reminders()`：排程迴圈是系統層級的背景工作，不是
+   代表任何特定伺服器的使用者操作，本來就該一次撈出「全部伺服器」到期的
+   提醒。它用 JOIN events 把 guild_id 隨每一列帶出來，之後處理該列時仍然
+   用那一列自己的 guild_id，並未略過範圍界定 —— 只是「界定範圍」的層級
+   從「呼叫這個函式的當下」改成「處理每一列的當下」。
 
 `_owned_event()` / `_owned_poll()` 就是為第 3 點準備的取用入口。
 """
@@ -24,6 +29,7 @@ from typing import Any
 
 from src.db import engine
 from src.lib.clock import now_ms
+from src.lib.ids import new_id
 
 Row = dict[str, Any]
 
@@ -95,15 +101,21 @@ async def create_event(
     role_ids: Sequence[int | str] = (),
     tag_everyone: bool = False,
     restrict_rsvp: bool = False,
+    reminder_offsets_min: Sequence[int] = (),
 ) -> None:
-    """建立活動，並在**同一次 commit**內一併寫入邀請名單。
+    """建立活動，並在**同一次 commit**內一併寫入邀請名單與提醒排程。
 
-    活動與邀請名單要嘛一起成功、要嘛一起不存在 —— 用 engine.run() 手動組多句
-    SQL 而非分兩次呼叫 execute()，避免中途失敗留下「活動建了但邀請名單是空的」
-    這種不一致狀態。
+    活動、邀請名單、提醒要嘛一起成功、要嘛一起不存在 —— 用 engine.run()
+    手動組多句 SQL 而非分開呼叫 execute()，避免中途失敗留下「活動建了但
+    提醒沒排」這種不一致狀態。
 
     restrict_rsvp 為 True 時，RsvpButton 只接受落在邀請名單展開後的成員
     （見 domain/invitees.py）；預設 False，任何看得到公告的人都能回覆。
+
+    reminder_offsets_min 是「提前幾分鐘提醒」的清單（例如 [1440, 60, 10]）。
+    會排定當下已經來不及的 offset 直接跳過不排（activities starting soon
+    的「提前 1 天」提醒沒有意義），而不是硬塞一筆 fire_at_utc 在過去的列，
+    那種列進了 scheduler 的逾期補償邏輯只會立刻被判定要跳過，白白佔位。
     """
     now = now_ms()
     event_params = (
@@ -129,6 +141,13 @@ async def create_event(
     if tag_everyone:
         invitee_params.append((event_id, "everyone", str(guild_id), 0))
 
+    reminder_params: list[tuple[str, str, int, int]] = []
+    for offset in reminder_offsets_min:
+        fire_at_utc = starts_at_utc - offset * 60_000
+        if fire_at_utc <= now:
+            continue
+        reminder_params.append((new_id(), event_id, fire_at_utc, offset))
+
     def _tx(conn: Any) -> None:
         conn.execute(
             "INSERT INTO events "
@@ -143,6 +162,12 @@ async def create_event(
             conn.execute(
                 "INSERT OR IGNORE INTO event_invitees "
                 "(event_id, target_type, target_id, required) VALUES (?,?,?,?)",
+                params,
+            )
+        for params in reminder_params:
+            conn.execute(
+                "INSERT INTO reminders (id, event_id, fire_at_utc, offset_min) "
+                "VALUES (?,?,?,?)",
                 params,
             )
         conn.commit()
@@ -264,3 +289,67 @@ async def cancel_event(event_id: str, guild_id: int | str) -> bool:
         (now_ms(), event_id, str(guild_id)),
     )
     return rowcount > 0
+
+
+# ── 提醒排程 ──────────────────────────────────────────────────────────────
+#
+# list_due_reminders() 是本檔案開頭第 5 點寫的唯一例外：系統層級的背景
+# 排程工作，本來就該一次撈出所有伺服器到期的提醒，不是代表某個使用者操作。
+
+
+async def list_due_reminders(now_ms_: int, *, limit: int = 50) -> list[Row]:
+    """撈出到期但還沒處理的提醒，JOIN events 一次把處理時需要的活動欄位
+    （guild_id / channel_id / title / starts_at_utc / location / message_id）
+    帶出來，避免每一列提醒都要再查一次活動（N+1）。
+
+    只挑 `events.status = 'scheduled'` 的活動 —— 活動被取消後，它的提醒
+    永遠不會再被這個查詢選中，等同自動失效，不需要另外去把 reminders
+    也標記掉。
+    """
+    return await engine.query_all(
+        "SELECT r.id, r.event_id, r.fire_at_utc, r.offset_min, "
+        "e.guild_id, e.channel_id, e.title, e.starts_at_utc, e.location, "
+        "e.message_id "
+        "FROM reminders r "
+        "JOIN events e ON e.id = r.event_id "
+        "WHERE r.state = 'pending' AND r.fire_at_utc <= ? AND e.status = 'scheduled' "
+        "ORDER BY r.fire_at_utc ASC LIMIT ?",
+        (now_ms_, limit),
+    )
+
+
+async def claim_reminder(reminder_id: str) -> bool:
+    """搶下一個提醒的處理權，標成 'sent'。回傳 False 代表已經被別人搶走
+    （或根本不是 pending 狀態），不該再發送。
+
+    刻意在**送出 Discord 訊息之前**呼叫（而不是送出之後才標記）：萬一送出
+    後、標記前 process 就當掉，寧可漏發一次提醒，也不要因為重啟後重新
+    處理同一列而對整個頻道重複發送、重複 tag 一次所有人。
+    """
+    rowcount = await engine.execute(
+        "UPDATE reminders SET state = 'sent', sent_at = ? WHERE id = ? AND state = 'pending'",
+        (now_ms(), reminder_id),
+    )
+    return rowcount > 0
+
+
+async def skip_reminder(reminder_id: str) -> bool:
+    """逾期又不需要補發時，標成 'skipped'。同樣走樂觀鎖，語意上跟
+    claim_reminder 是同一種「宣告這一列我處理完了」的動作，只是結果不同。
+    """
+    rowcount = await engine.execute(
+        "UPDATE reminders SET state = 'skipped', sent_at = ? WHERE id = ? AND state = 'pending'",
+        (now_ms(), reminder_id),
+    )
+    return rowcount > 0
+
+
+async def mark_reminder_failed(reminder_id: str) -> None:
+    """claim_reminder 成功後才會呼叫這個 —— 這一列已經是我們獨佔的了
+    （state 已經被我們改成 'sent'），所以這裡不需要 WHERE state='pending'
+    的樂觀鎖，單純把結果覆寫成 'failed' 以便日後排查「這則提醒為什麼沒發出去」。
+    """
+    await engine.execute(
+        "UPDATE reminders SET state = 'failed' WHERE id = ?",
+        (reminder_id,),
+    )
