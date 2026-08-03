@@ -399,13 +399,12 @@ class TestConfirmWithRestrictRsvp:
 
 
 class TestConfirmSchedulesDefaultReminders:
-    """發布活動時要自動排定預設提醒（1天/1小時/10分前，可由 guild_settings
-    的 default_reminders 調整），不必使用者另外操作 —— 這是 M4 的核心承諾。
+    """發布活動時要自動排定預設提醒（預設只在開始前 5 分鐘提醒一次，可由
+    guild_settings 的 default_reminders 調整），不必使用者另外操作 —— 這是
+    M4 的核心承諾。
     """
 
-    async def test_schedules_reminder_within_default_offsets(self, db) -> None:
-        """pending 只設定 1 小時後開始，預設的 1440/60 分鐘偏移量都會落在
-        過去而被跳過，只剩 10 分鐘偏移量會被實際排定。"""
+    async def test_schedules_default_five_minute_reminder(self, db) -> None:
         pending = _make_pending(starts_at_utc=now_ms() + 3_600_000)
         view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
         interaction = _make_interaction()
@@ -415,7 +414,20 @@ class TestConfirmSchedulesDefaultReminders:
         rows = await db.query_all(
             "SELECT offset_min FROM reminders WHERE event_id = ?", (view.event_id,)
         )
-        assert [r["offset_min"] for r in rows] == [10]
+        assert [r["offset_min"] for r in rows] == [5]
+
+    async def test_offset_that_would_fire_in_the_past_is_skipped(self, db) -> None:
+        """活動 2 分鐘後就開始，「提前 5 分鐘」排出來會是過去的時間，該跳過不排。"""
+        pending = _make_pending(starts_at_utc=now_ms() + 2 * 60_000)
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        rows = await db.query_all(
+            "SELECT offset_min FROM reminders WHERE event_id = ?", (view.event_id,)
+        )
+        assert rows == []
 
     async def test_uses_guild_specific_default_reminders_setting(self, db) -> None:
         await repo.ensure_guild(GUILD_ID, "Asia/Taipei")
@@ -434,16 +446,3 @@ class TestConfirmSchedulesDefaultReminders:
             (view.event_id,),
         )
         assert [r["offset_min"] for r in rows] == [5, 30]
-
-    async def test_far_future_event_schedules_all_three_default_reminders(self, db) -> None:
-        pending = _make_pending(starts_at_utc=now_ms() + 30 * 24 * 3_600_000)  # 30 天後
-        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
-        interaction = _make_interaction()
-
-        await view._confirm_impl(interaction)
-
-        rows = await db.query_all(
-            "SELECT offset_min FROM reminders WHERE event_id = ? ORDER BY offset_min",
-            (view.event_id,),
-        )
-        assert [r["offset_min"] for r in rows] == [10, 60, 1440]

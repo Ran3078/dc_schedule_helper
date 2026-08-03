@@ -20,13 +20,13 @@ class TestParseDefaultReminders:
         assert parse_default_reminders(" 1440 , 60 , 10 ") == [1440, 60, 10]
 
     def test_none_falls_back_to_default(self) -> None:
-        assert parse_default_reminders(None) == [1440, 60, 10]
+        assert parse_default_reminders(None) == [5]
 
     def test_empty_string_falls_back_to_default(self) -> None:
-        assert parse_default_reminders("") == [1440, 60, 10]
+        assert parse_default_reminders("") == [5]
 
     def test_whitespace_only_falls_back_to_default(self) -> None:
-        assert parse_default_reminders("   ") == [1440, 60, 10]
+        assert parse_default_reminders("   ") == [5]
 
     def test_skips_non_numeric_tokens(self) -> None:
         assert parse_default_reminders("60,abc,10") == [60, 10]

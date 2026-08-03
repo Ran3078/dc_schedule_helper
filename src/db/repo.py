@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from src.db import engine
+from src.domain.reminders import DEFAULT_REMINDERS_CSV
 from src.lib.clock import now_ms
 from src.lib.ids import new_id
 
@@ -42,12 +43,18 @@ async def ensure_guild(guild_id: int | str, default_tz: str) -> None:
 
     用 INSERT OR IGNORE 而非先查再插：libsql 對唯一鍵衝突拋的是普通 ValueError
     而非 IntegrityError，靠例外判斷不可靠（見 engine.py 的驅動行為說明）。
+
+    default_reminders 明確帶入 DEFAULT_REMINDERS_CSV，而不是依賴資料表欄位
+    本身的 SQL DEFAULT —— SQLite 的 ALTER TABLE 不支援直接改欄位預設值
+    （要改只能整張表重建），把預設值的真相留在 Python 常數這裡，之後要調整
+    只需要改一個地方，不用碰資料庫結構。
     """
     now = now_ms()
     await engine.execute(
         "INSERT OR IGNORE INTO guild_settings "
-        "(guild_id, default_tz, created_at, updated_at) VALUES (?,?,?,?)",
-        (str(guild_id), default_tz, now, now),
+        "(guild_id, default_tz, default_reminders, created_at, updated_at) "
+        "VALUES (?,?,?,?,?)",
+        (str(guild_id), default_tz, DEFAULT_REMINDERS_CSV, now, now),
     )
 
 

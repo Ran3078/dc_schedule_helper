@@ -41,15 +41,28 @@ class Scheduler(commands.Cog):
 
     @tasks.loop(seconds=_TICK_SECONDS)
     async def reminder_tick(self) -> None:
-        now = now_ms()
-        due = await repo.list_due_reminders(now, limit=_BATCH_LIMIT)
+        # ★ 這整個方法的例外都必須在這裡攔截，不能讓任何東西逃出去。
+        #
+        # discord.ext.tasks 的 @tasks.loop 預設只對一小組網路類例外
+        # （OSError／ConnectionClosed／aiohttp.ClientError／TimeoutError）
+        # 自動重試；其他例外（包括 Turso 連線瞬斷時 libsql 拋出的普通
+        # ValueError）會被記一次 log 後直接讓整個迴圈永久停止 —— 不是
+        # 暫停一輪，是這個 task 徹底結束，之後再也不會醒來，直到整個
+        # bot 進程重啟為止。DB 連線瞬斷是背景排程遇得到的常態，不是
+        # 罕見狀況，用 bare except 把「這一輪失敗」和「這個功能死掉」
+        # 徹底分開，是這裡最重要的一條防線。
+        try:
+            now = now_ms()
+            due = await repo.list_due_reminders(now, limit=_BATCH_LIMIT)
+        except Exception:
+            log.exception("撈取到期提醒失敗，這一輪跳過，下一輪（30 秒後）再試")
+            return
+
         for reminder in due:
             try:
                 await self._process_reminder(reminder, now)
             except Exception:
-                # 單一提醒處理失敗不該讓這一輪其他提醒都發不出去；
-                # tasks.loop 本身也會攔截整個迴圈拋出的例外並重試，
-                # 但那是下一輪的事，這裡先確保「一顆老鼠屎壞一鍋粥」不會發生。
+                # 單一提醒處理失敗不該讓這一輪其他提醒都發不出去。
                 log.exception("處理提醒 %s 時發生未預期錯誤", reminder["id"])
 
     @reminder_tick.before_loop
@@ -84,16 +97,26 @@ class Scheduler(commands.Cog):
             return
 
         invitees = await repo.list_event_invitees(reminder["event_id"], reminder["guild_id"])
-        user_ids = [int(i["target_id"]) for i in invitees if i["target_type"] == "user"]
+        user_ids = {int(i["target_id"]) for i in invitees if i["target_type"] == "user"}
         role_ids = [int(i["target_id"]) for i in invitees if i["target_type"] == "role"]
         tag_everyone = any(i["target_type"] == "everyone" for i in invitees)
 
+        # 已經表態「參加」或「待定」的人，就算當初建立活動時沒被明確邀請
+        # （例如揪辦活動的人忘記選邀請對象），提醒還是該點名到他們 —— 誰
+        # 能回覆本來就不受邀請名單限制（見 domain/rsvp.py），提醒對象同理
+        # 不該只看邀請名單，不然「有人主動說要去，卻收不到提醒」會很怪。
+        rsvps = await repo.list_rsvps(reminder["event_id"], reminder["guild_id"])
+        user_ids |= {int(r["user_id"]) for r in rsvps if r["status"] in ("yes", "maybe")}
+        user_ids_list = sorted(user_ids)
+
         try:
             await channel.send(
-                content=build_mention_content(user_ids, role_ids, tag_everyone=tag_everyone),
+                content=build_mention_content(
+                    user_ids_list, role_ids, tag_everyone=tag_everyone
+                ),
                 embed=build_reminder_embed(reminder),
                 allowed_mentions=build_allowed_mentions(
-                    user_ids, role_ids, tag_everyone=tag_everyone
+                    user_ids_list, role_ids, tag_everyone=tag_everyone
                 ),
             )
         except discord.HTTPException:

@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 # 這時候「活動前 X 分鐘」這句話已經失真，不如乾脆不發。
 OVERDUE_GRACE_MS = 15 * 60_000
 
-DEFAULT_REMINDERS_CSV = "1440,60,10"  # 1 天、1 小時、10 分鐘前
+DEFAULT_REMINDERS_CSV = "5"  # 只在活動開始前 5 分鐘提醒一次
 
 
 def parse_default_reminders(csv: str | None) -> list[int]:

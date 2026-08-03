@@ -229,3 +229,139 @@ class TestSendFailure:
 
         row = await db.query_one("SELECT state FROM reminders WHERE id = ?", (reminder_id,))
         assert row["state"] == "failed"
+
+
+class TestTickSurvivesTransientFailures:
+    """回歸測試：實際發生過的事故 —— Turso 連線串流逾時斷開時，libsql 拋出
+    普通 ValueError（不是 discord.ext.tasks 預設會自動重試的網路類例外），
+    導致 reminder_tick 整個背景工作永久停止，直到 bot 重啟才恢復，期間
+    所有到期的提醒全部漏發。
+
+    修法：reminder_tick() 內部必須自己攔截「撈取到期清單」這一步的例外，
+    不能依賴 @tasks.loop 的預設重試機制 —— 它只認得 OSError / aiohttp
+    ClientError 等網路類例外，不包含我們這裡遇到的 ValueError。
+    """
+
+    async def test_list_due_reminders_failure_does_not_raise(self, monkeypatch) -> None:
+        async def _boom(*args, **kwargs):
+            raise ValueError('Hrana: `api error: `status=404 Not Found`')
+
+        monkeypatch.setattr(repo, "list_due_reminders", _boom)
+        scheduler, _ = _make_scheduler()
+
+        # 呼叫底層 coroutine（略過 @tasks.loop 的計時/重試包裝），
+        # 直接驗證這一輪本身不會把例外丟出去。
+        await Scheduler.reminder_tick.coro(scheduler)  # 不應拋例外
+
+    async def test_next_tick_recovers_after_a_failed_fetch(self, db, monkeypatch) -> None:
+        """故障是暫時的：下一輪呼叫（模擬連線已重建）要能正常撈到到期提醒，
+        不會因為上一輪失敗過就一直壞下去。"""
+        _, _ = await _create_event_with_reminder(
+            db, starts_at_utc=PROCESS_NOW + 40 * MINUTE, offset_min=45
+        )
+        # reminder_tick() 內部自己呼叫 now_ms() 決定「現在」，要讓它對齊
+        # 我們用來排定提醒的 PROCESS_NOW，這一輪測試才會判定成「到期」。
+        monkeypatch.setattr("src.bot.cogs.scheduler.now_ms", lambda: PROCESS_NOW)
+
+        real_list_due = repo.list_due_reminders
+        call_count = 0
+
+        async def _fail_once(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("Hrana stream not found")
+            return await real_list_due(*args, **kwargs)
+
+        monkeypatch.setattr(repo, "list_due_reminders", _fail_once)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+
+        await Scheduler.reminder_tick.coro(scheduler)  # 第一輪：撈取失敗但不拋例外
+        channel.send.assert_not_awaited()
+
+        await Scheduler.reminder_tick.coro(scheduler)  # 第二輪：恢復正常
+        channel.send.assert_awaited_once()
+
+
+class TestTagsRsvpdUsersEvenIfNotInvited:
+    """已經按過參加/待定的人，就算建立活動時沒被明確邀請，提醒也該點名到他們
+    —— 不然「有人主動說要去，卻收不到提醒」會很奇怪。這是實際回報過的體驗
+    問題：活動沒選邀請對象時，提醒完全不會 tag 任何人，沒人會注意到。
+    """
+
+    STARTS_AT = PROCESS_NOW + 40 * MINUTE
+    OFFSET_MIN = 45
+
+    async def test_tags_user_who_rsvpd_yes_without_being_invited(self, db) -> None:
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
+        )  # 沒有 user_ids/role_ids，等同「忘記選邀請對象」
+        await repo.upsert_rsvp(event_id, GUILD_ID, 999, "yes")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] == "<@999>"
+
+    async def test_tags_maybe_but_not_no(self, db) -> None:
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
+        )
+        await repo.upsert_rsvp(event_id, GUILD_ID, 111, "maybe")
+        await repo.upsert_rsvp(event_id, GUILD_ID, 222, "no")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] == "<@111>"
+
+    async def test_does_not_duplicate_user_already_invited(self, db) -> None:
+        """本來就在邀請名單裡、又自己按了參加的人，只該出現一次。"""
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
+        )
+        await repo.upsert_rsvp(event_id, GUILD_ID, 111, "yes")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] == "<@111>"
+
+    async def test_combines_invited_and_rsvpd_users(self, db) -> None:
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
+        )
+        await repo.upsert_rsvp(event_id, GUILD_ID, 222, "yes")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] == "<@111> <@222>"
+
+    async def test_no_invitees_and_no_rsvps_sends_no_mention(self, db) -> None:
+        """兩邊都沒人時該送 None，不是空字串。"""
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
+        )
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] is None
