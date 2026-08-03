@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from src.db import engine
 from src.domain.reminders import DEFAULT_REMINDERS_CSV
@@ -360,3 +360,161 @@ async def mark_reminder_failed(reminder_id: str) -> None:
         "UPDATE reminders SET state = 'failed' WHERE id = ?",
         (reminder_id,),
     )
+
+
+# ── 投票 ──────────────────────────────────────────────────────────────────
+
+
+async def create_poll(
+    *,
+    poll_id: str,
+    guild_id: int | str,
+    channel_id: int | str,
+    creator_id: int | str,
+    question: str,
+    options: Sequence[tuple[str, str | None]],
+    kind: str = "generic",
+    multi: bool = False,
+    max_choices: int | None = None,
+    anonymous: bool = False,
+    allow_change: bool = True,
+    closes_at: int | None = None,
+) -> None:
+    """建立投票，並在**同一次 commit** 內一併寫入所有選項。
+
+    理由同 create_event：投票跟它的選項要嘛一起成功、要嘛一起不存在，避免
+    「投票建了但一個選項都沒有」這種中途失敗留下的不一致狀態。
+
+    options 是 (label, meta) 的序列，依序決定 poll_options.sort；meta 用於
+    kind='time_slot' 時存候選時間的 epoch 字串，generic 投票就是 None。
+    """
+    now = now_ms()
+    poll_params = (
+        poll_id,
+        str(guild_id),
+        str(channel_id),
+        str(creator_id),
+        question,
+        kind,
+        int(multi),
+        max_choices,
+        int(anonymous),
+        int(allow_change),
+        closes_at,
+        now,
+    )
+    option_params = [
+        (new_id(), poll_id, label, meta, sort) for sort, (label, meta) in enumerate(options)
+    ]
+
+    def _tx(conn: Any) -> None:
+        conn.execute(
+            "INSERT INTO polls "
+            "(id, guild_id, channel_id, creator_id, question, kind, multi, "
+            "max_choices, anonymous, allow_change, closes_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            poll_params,
+        )
+        for params in option_params:
+            conn.execute(
+                "INSERT INTO poll_options (id, poll_id, label, meta, sort) VALUES (?,?,?,?,?)",
+                params,
+            )
+        conn.commit()
+
+    await engine.run(_tx)
+
+
+async def set_poll_message(poll_id: str, guild_id: int | str, message_id: int | str) -> bool:
+    """記錄公告訊息 ID，供投票後即時更新卡片、以及 /poll close 編輯訊息用。"""
+    rowcount = await engine.execute(
+        "UPDATE polls SET message_id = ? WHERE id = ? AND guild_id = ?",
+        (str(message_id), poll_id, str(guild_id)),
+    )
+    return rowcount > 0
+
+
+async def list_poll_options(poll_id: str, guild_id: int | str) -> list[Row]:
+    """列出投票的選項，JOIN polls 一起限定 guild_id（理由同 list_event_invitees）。"""
+    return await engine.query_all(
+        "SELECT po.* FROM poll_options po "
+        "JOIN polls p ON p.id = po.poll_id "
+        "WHERE po.poll_id = ? AND p.guild_id = ? "
+        "ORDER BY po.sort ASC",
+        (poll_id, str(guild_id)),
+    )
+
+
+async def list_poll_votes(poll_id: str, guild_id: int | str) -> list[Row]:
+    """列出投票的所有票，JOIN polls 一起限定 guild_id。"""
+    return await engine.query_all(
+        "SELECT pv.* FROM poll_votes pv "
+        "JOIN polls p ON p.id = pv.poll_id "
+        "WHERE pv.poll_id = ? AND p.guild_id = ?",
+        (poll_id, str(guild_id)),
+    )
+
+
+async def cast_vote(
+    poll_id: str,
+    guild_id: int | str,
+    user_id: int | str,
+    option_ids: Sequence[str],
+    *,
+    allow_change: bool,
+) -> Literal["ok", "locked", "closed", "not_found"]:
+    """記錄一次投票：整批替換該使用者在這個投票裡的選擇。
+
+    用「先刪光這個人在這個 poll 的舊票，再依這次選取的 option_ids 全部重新
+    插入」而非逐一 toggle —— Select 元件每次互動 Discord 都會回傳「目前
+    完整選取的選項清單」，整批替換剛好對應這個互動模型，單選（一個
+    option_id）跟複選（多個）共用同一段邏輯。
+
+    allow_change=False 時，若使用者在這個 poll 已經有過投票紀錄，直接拒絕
+    這次的變更（回傳 "locked"），不覆蓋原本的票。存在性與開放狀態的檢查
+    跟寫入放在同一個交易內，避免「查的時候還開著、寫的時候已經關了」的競態。
+    """
+    now = now_ms()
+    guild_id_s = str(guild_id)
+    user_id_s = str(user_id)
+
+    def _tx(conn: Any) -> str:
+        row = conn.execute(
+            "SELECT status FROM polls WHERE id = ? AND guild_id = ?",
+            (poll_id, guild_id_s),
+        ).fetchone()
+        if row is None:
+            return "not_found"
+        if row[0] != "open":
+            return "closed"
+
+        if not allow_change:
+            existing = conn.execute(
+                "SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_id = ? LIMIT 1",
+                (poll_id, user_id_s),
+            ).fetchone()
+            if existing is not None:
+                return "locked"
+
+        conn.execute(
+            "DELETE FROM poll_votes WHERE poll_id = ? AND user_id = ?",
+            (poll_id, user_id_s),
+        )
+        for option_id in option_ids:
+            conn.execute(
+                "INSERT INTO poll_votes (poll_id, option_id, user_id, voted_at) VALUES (?,?,?,?)",
+                (poll_id, option_id, user_id_s, now),
+            )
+        conn.commit()
+        return "ok"
+
+    return await engine.run(_tx)
+
+
+async def close_poll(poll_id: str, guild_id: int | str) -> bool:
+    """關閉投票。樂觀鎖：只能從 'open' 轉 'closed'，重複關閉回傳 False。"""
+    rowcount = await engine.execute(
+        "UPDATE polls SET status = 'closed' WHERE id = ? AND guild_id = ? AND status = 'open'",
+        (poll_id, str(guild_id)),
+    )
+    return rowcount > 0

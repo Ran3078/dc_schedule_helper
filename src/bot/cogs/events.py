@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from src.bot.cogs._shared import guild_tz
 from src.bot.embeds import build_event_embed, build_event_list_embed
 from src.bot.modals import EventDescriptionModal, PendingEvent
 from src.db import repo
@@ -40,21 +41,6 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    async def _guild_tz(self, guild_id: int) -> str:
-        """取得該伺服器的預設時區。
-
-        正常情況下 on_guild_join / on_ready 早就建好 guild_settings，這裡的
-        self-heal 只防禦「bot 被邀入時剛好連線中斷導致沒建成」這類邊界情況，
-        不是常態路徑。
-        """
-        settings = await repo.get_guild_settings(guild_id)
-        if settings is None:
-            default_tz = getattr(self.bot, "settings", None)
-            tz = default_tz.default_tz if default_tz else "Asia/Taipei"
-            await repo.ensure_guild(guild_id, tz)
-            return tz
-        return settings["default_tz"]
-
     @app_commands.command(name="create", description="建立新活動")
     @app_commands.describe(
         title="活動標題",
@@ -84,7 +70,7 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
             )
             return
 
-        tz = await self._guild_tz(interaction.guild_id)
+        tz = await guild_tz(self.bot, interaction.guild_id)
 
         # time 是選填的：留空的話，Modal 送出後會改顯示日期時間挑選器
         # （見 modals.py 的分流邏輯與 views_datetime.py 開頭對 Discord
@@ -139,7 +125,7 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
         tz_name = "Asia/Taipei"
         if interaction.guild_id is not None:
             try:
-                tz_name = await self._guild_tz(interaction.guild_id)
+                tz_name = await guild_tz(self.bot, interaction.guild_id)
             except Exception:
                 log.warning("time autocomplete 取得伺服器時區失敗，改用預設值", exc_info=True)
 

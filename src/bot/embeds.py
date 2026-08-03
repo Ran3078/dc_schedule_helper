@@ -6,6 +6,7 @@ from typing import Any
 
 import discord
 
+from src.domain.polls import build_tally
 from src.domain.rsvp import RsvpSummary
 from src.lib.timeparse import discord_timestamp
 
@@ -165,6 +166,41 @@ def build_reminder_embed(reminder: Row) -> discord.Embed:
         description=description,
         colour=discord.Colour.orange(),
     )
+
+
+def build_poll_embed(poll: Row, options: list[Row], votes: list[Row]) -> discord.Embed:
+    """投票卡片：每個選項一個欄位顯示票數，非匿名模式另外列出是誰投的。
+
+    poll 是 polls 表的一列，options 是 poll_options（已依 sort 排序），votes
+    是 poll_votes。票數統計交給 domain.polls.build_tally 算，這裡只管排版。
+    """
+    closed = poll["status"] == "closed"
+    title = f"🗳️ {poll['question']}"
+    if closed:
+        title += "（已截止）"
+    embed = discord.Embed(
+        title=title,
+        colour=discord.Colour.dark_grey() if closed else discord.Colour.blurple(),
+    )
+
+    tally = build_tally(options, votes)
+    for option in options:
+        voter_ids = tally.get(option["id"], [])
+        name = f"{option['label']}（{len(voter_ids)} 票）"
+        value = "🔒 匿名投票，僅顯示票數" if poll["anonymous"] else _format_user_mentions(voter_ids)
+        embed.add_field(name=name, value=value, inline=False)
+
+    if poll.get("closes_at") and not closed:
+        embed.add_field(
+            name="⏰ 預計截止",
+            value=discord_timestamp(poll["closes_at"], "R"),
+            inline=False,
+        )
+
+    mode = "複選" if poll["multi"] else "單選"
+    change = "可改票" if poll["allow_change"] else "不可改票"
+    embed.set_footer(text=f"投票 ID：{poll['id']}　·　{mode}　·　{change}")
+    return embed
 
 
 def build_event_list_embed(events: list[Row], *, title: str) -> discord.Embed:

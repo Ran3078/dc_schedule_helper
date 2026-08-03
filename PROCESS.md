@@ -3,7 +3,7 @@
 > 給接手這個專案的下一位 AI／開發者看的。目的是讓你不用重新爬一次對話記錄
 > 就能知道「為什麼是這樣做」，尤其是那些踩過坑才學到的細節。
 >
-> 最後更新：2026-08-03（M0–M4 完成，含事後修的一個排程 bug）
+> 最後更新：2026-08-03（M0–M5 完成）
 
 ---
 
@@ -15,11 +15,11 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
 是本機用的規劃草稿，`.gitignore` 裡排除了它——如果你在 repo 裡找不到它，
 去問使用者要，不要嘗試從 git 歷史挖，舊版本已經被移除且不完整）。
 
-核心需求（已全部實作）：
+核心需求（已全部實作，含投票）：
 1. Tag 人的能力（`@user`／`@role`／`@everyone`）
 2. 安排參加對象（User Select／Role Select）
 3. 時間必填、地點與內容選填
-4. 投票開關 + 單選／複選 —— **這項還沒做，是 M5**
+4. 投票開關 + 單選／複選
 
 ## 技術棧與部署
 
@@ -38,7 +38,7 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
 
 ---
 
-## 目前完成度：M0–M4（含一次事後修復）
+## 目前完成度：M0–M5
 
 對照 [PLAN.md](PLAN.md) 的里程碑表：
 
@@ -49,12 +49,24 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
 | M2 參加對象＋Tag | ✅ 完成 | UserSelect/RoleSelect、mention 白名單、`restrict_rsvp` 切換 |
 | M3 RSVP | ✅ 完成 | 參加/待定/不參加按鈕（`DynamicItem` 持久化） |
 | M4 提醒 | ✅ 完成 | `reminders` 表 + 30 秒排程迴圈 + 逾期補償 |
-| M5 投票 | ❌ 未開始 | `/poll` 系列指令、單選/複選 |
+| M5 投票 | ✅ 完成 | `/poll create|close|results`，單選/複選，`DynamicItem` 持久化下拉選單 |
 | M6 原生活動同步 | ❌ 未開始 | 同步到 Discord「活動」分頁 |
 | M7 收尾指令 | ❌ 未開始 | `/event edit`／`cancel`／`invite`／`ping`、`/settings`、`/timezone` |
 
-**測試：326 個全過，ruff 乾淨。** 每個里程碑都在本機（用開發者的私人 Discord
-伺服器 + 真實 Turso 資料庫）手動驗證過，不是只有單元測試。
+**測試：372 個全過，ruff 乾淨。** M0–M4 都在本機（用開發者的私人 Discord
+伺服器 + 真實 Turso 資料庫）手動驗證過，不是只有單元測試。**M5（投票）目前
+只驗證過測試套件與 import／啟動正常，還沒有人在真實 Discord 上手動點過
+`/poll create` 走一輪完整流程**——這是下一個該做的驗證，不是「假設它能用」。
+
+> **關於 M5 的實作來源**：這份文件的上一版是在 M5 開始前寫的。M5 的程式碼
+> （`src/domain/polls.py`／`src/bot/views_poll.py`／`src/bot/cogs/polls.py`／
+> `src/bot/cogs/_shared.py`，以及對 `client.py`／`embeds.py`／`events.py`／
+> `repo.py` 的修改）是在某次對話空檔被寫入 repo 的，寫的人已經讀過這份文件
+> 前一版並確實遵守了裡面列的每一條紀律（多伺服器範圍界定、`DynamicItem`
+> 持久化模式、原子交易、樂觀鎖）。程式碼審查過，邏輯正確，372 個測試全過，
+> 已經 commit——但既然連接手你的人都不確定這段程式碼的完整來歷，你接手後
+> 第一件事最好是自己動手測一次 `/poll create`，不要只憑「測試過了」就假設
+> 沒問題。
 
 ### 目前實際存在的指令
 
@@ -64,10 +76,15 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
                                 建立活動，time 留空會跳出日期時間挑選器
 /event list [scope] [limit]    列出活動（upcoming/mine/all）
 /event info <event_id>         查看單一活動詳情
+/poll create question options multi? anonymous? allow_change? closes? kind?
+                                建立投票，options 用 | 分隔，kind=time_slot
+                                會把選項解析成時間顯示 Discord 時間戳
+/poll close <id>               關閉投票（僅建立者可操作），公告卡片同步停用
+/poll results <id>              查看投票結果
 ```
 
 **沒有** `/event edit`、`/event cancel`、`/event invite`、`/event ping`、
-`/settings`、`/timezone`、`/poll` —— 這些都是 M7／M5 的範圍，還沒做。
+`/settings`、`/timezone` —— 這些是 M7 的範圍，還沒做。
 
 ### `/event create` 的完整互動流程
 
@@ -204,19 +221,21 @@ log 後讓整個背景工作永久停止**，不是暫停一輪，是徹底死�
 
 ## 資料庫 Schema 現況
 
-三個 migration 檔，**依序套用，不要修改已存在的檔案**（Render 每次
+四個 migration 檔，**依序套用，不要修改已存在的檔案**（Render 每次
 deploy 都會重跑 migration，已套用的靠 `_migrations` 表跳過，改舊檔案對
 已部署的資料庫沒有追溯效果）：
 
 - `001_init.sql`：9 張表的完整初始 schema（`guild_settings`／
   `user_prefs`／`events`／`event_invitees`／`rsvps`／`polls`／
-  `poll_options`／`poll_votes`／`reminders`）。**`polls` 三張表目前完全
-  沒被使用**，M5 才會用到。
+  `poll_options`／`poll_votes`／`reminders`）。
 - `002_restrict_rsvp.sql`：`events` 加 `restrict_rsvp` 欄位（用
   `ALTER TABLE ADD COLUMN`，SQLite 不支援直接改欄位預設值，這點在檔案
   註解裡有寫）。
 - `003_default_reminder_five_min.sql`：把 `guild_settings` 裡還停在舊
   預設值（`'1440,60,10'`）的伺服器回填成新預設值（`'5'`）。
+- `004_polls_creator_id.sql`：`polls` 表加 `creator_id`（001 當初設計
+  `polls` 時漏加，`events` 一開始就有這欄）。`/poll close` 靠這個判斷
+  誰能關閉投票。
 
 新增 migration 一律用 `00N_描述.sql`，內容要對 `CREATE TABLE` 用
 `IF NOT EXISTS`；`ALTER TABLE` 沒有這個語法，冪等性靠 migration runner
@@ -233,23 +252,27 @@ src/
 ├── db/
 │   ├── engine.py            ★ libsql 連線 + asyncio.to_thread 包裝
 │   ├── migrate.py           migration runner
-│   ├── migrations/          001~003（見上）
+│   ├── migrations/          001~004（見上）
 │   └── repo.py              ★ 所有 DB CRUD，多伺服器紀律寫在檔頭
 ├── domain/                  純邏輯，不碰 DB／Discord API，方便單元測試
 │   ├── invitees.py          角色展開成實際成員（需要 discord.Guild）
 │   ├── rsvp.py               RsvpSummary + 參加/待定/不參加/未回覆分類
-│   └── reminders.py          CSV 解析 + 逾期補償規則
+│   ├── reminders.py          CSV 解析 + 逾期補償規則
+│   └── polls.py               選項字串解析 + 票數統計
 ├── bot/
 │   ├── client.py             Bot 子類，intents，指令同步，DynamicItem 註冊
-│   ├── embeds.py             所有 Embed builder（活動卡片/提醒卡片/清單）
+│   ├── embeds.py             所有 Embed builder（活動/提醒/投票卡片/清單）
 │   ├── modals.py             PendingEvent dataclass + 活動內容 Modal
 │   ├── views.py              ConfirmEventView（非持久化）
 │   ├── views_datetime.py     DateTimePickerView（非持久化）
 │   ├── views_invitees.py     InviteePickerView（非持久化）
 │   ├── views_rsvp.py         RsvpButton（★ 持久化，DynamicItem）
+│   ├── views_poll.py          PollVoteSelect（★ 持久化，DynamicItem）
 │   └── cogs/
 │       ├── meta.py           /ping
 │       ├── events.py         /event create|list|info
+│       ├── polls.py           /poll create|close|results
+│       ├── _shared.py         跨 cog 共用的 guild_tz() 輔助函式
 │       └── scheduler.py      ★ 30 秒提醒排程迴圈
 ├── lib/
 │   ├── clock.py               now_ms()，統一時間來源方便測試注入
@@ -259,7 +282,7 @@ src/
 └── http/
     └── health.py               /healthz（保活）、/readyz（深度檢查）
 
-tests/                        326 個測試，跑在本機 SQLite 檔上，不需要
+tests/                        372 個測試，跑在本機 SQLite 檔上，不需要
                                真實 Turso 憑證（見 conftest.py 的 db fixture）
 ```
 
@@ -272,11 +295,18 @@ tests/                        326 個測試，跑在本機 SQLite 檔上，不�
    感覺不出差異，但正式有流量後每次查詢會多繞一趟。之前有跟使用者提過，
    使用者選擇先不處理。
 
-2. **背景任務追蹤在對話時段跨越時可能遺失**——實測遇過一次：背景啟動的
-   bot 進程在對話恢復後被系統判定「找不到完成紀錄」，結果變成兩個相同的
-   進程同時在跑（同一秒啟動）。**如果你接手後要重啟本機 bot，先用
-   `Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 檢查有沒有
-   殘留的 `src.main` 進程，避免重複啟動。**
+2. **背景任務追蹤在對話時段跨越時會遺失，而且會重複啟動進程**——這不是
+   單一事件，是**確認會重複發生**的模式：已經遇過至少兩次，背景啟動的
+   bot 進程在對話恢復後被系統判定「找不到完成紀錄」，結果變成兩個一模
+   一樣的進程同一秒自動起來，同時搶同一份 Turso 資料、同一個 Discord
+   token。**每次要重啟本機 bot（不管是接手當下第一次啟動，還是後續任何
+   一次重啟）之前，都先用**
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*src.main*' }
+   ```
+   **檢查有沒有殘留或重複的 `src.main` 進程，有的話先 `Stop-Process -Force`
+   全部清掉，確認乾淨後才啟動新的一個。不要假設「我只呼叫了一次啟動指令」
+   等於「只會有一個進程在跑」。**
 
 3. **還沒部署到 Render**，只在本機測試過。部署前記得：
    - 在 Render 環境變數填 5 個機密（`DISCORD_TOKEN`／`DISCORD_APP_ID`／
@@ -298,23 +328,22 @@ tests/                        326 個測試，跑在本機 SQLite 檔上，不�
 
 依照 [PLAN.md](PLAN.md) 的規劃，接下來是：
 
-1. **M5 投票**——`/poll create|close|results`，自製投票為主（無選項上限、
-   可改票、可匿名），`native:true` 選配走 Discord 原生 `discord.Poll`。
-   `polls`／`poll_options`／`poll_votes` 三張表已經在 schema 裡，等著被
-   用。投票按鈕如果要撐過重啟，記得用 `DynamicItem`（見上方第 4 點）。
+0. **先手動驗證一次 M5**——見上方「關於 M5 的實作來源」那段。跑
+   `/poll create` 建一個投票、投一票、`/poll close`、`/poll results`，
+   確認整條路徑在真實 Discord 上真的沒問題，不要只信測試套件。
 
-2. **M6 原生活動同步**——`guild.create_scheduled_event()`，讓活動出現在
+1. **M6 原生活動同步**——`guild.create_scheduled_event()`，讓活動出現在
    Discord「活動」分頁，換取免費的手機推播。注意：`EXTERNAL` entity
    type（純文字地點）Discord 會強制要求填結束時間，沒填 duration 時要
    預設抓 2 小時，不要讓使用者被迫填一個「選填」的欄位。
 
-3. **M7 收尾指令**——`/event edit`／`cancel`／`invite`／`ping`、
+2. **M7 收尾指令**——`/event edit`／`cancel`／`invite`／`ping`、
    `/settings`、`/timezone`。這些是讓現有功能「可調整」，不是新功能。
 
 開始任何一項之前，建議：
 - 讀一遍這份文件的「關鍵架構決策」章節
 - 跑一次 `pytest -q` 確認起點是綠的
-- 跟使用者確認他們的優先順序有沒有變（上一輪是 M5 之前先修了排程 bug）
+- 跟使用者確認他們的優先順序有沒有變
 
 ---
 

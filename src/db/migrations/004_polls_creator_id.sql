@@ -1,0 +1,14 @@
+-- 004_polls_creator_id: 投票加上建立者欄位
+--
+-- M5 的 /poll close 只允許建立投票的人關閉自己的投票，需要知道是誰建的。
+-- 001_init.sql 當初設計 polls 表時漏了這欄（events 表一開始就有
+-- creator_id，polls 沒有跟著加）。留空（NULL）不設 NOT NULL——SQLite 的
+-- ALTER TABLE ADD COLUMN 對 NOT NULL 欄位一定要求常數 DEFAULT，TEXT 欄位
+-- 沒有合理的常數可填；polls 表目前完全沒有正式資料（M5 才第一次真的寫入），
+-- 之後所有新投票都會由 repo.create_poll() 帶入 creator_id，實務上不會是
+-- NULL。
+--
+-- SQLite 的 ALTER TABLE ADD COLUMN 沒有 IF NOT EXISTS 語法；冪等性靠
+-- migrate.py 的 _migrations 表保證（每個檔名只套用一次），理由同
+-- 002_restrict_rsvp.sql。
+ALTER TABLE polls ADD COLUMN creator_id TEXT;
