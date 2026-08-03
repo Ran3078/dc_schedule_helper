@@ -26,3 +26,5 @@ htmlcov/
 Thumbs.db
 desktop.ini
 PLAN.md
+*.md
+!README.md

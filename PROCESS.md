@@ -53,20 +53,32 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
 | M6 原生活動同步 | ❌ 未開始 | 同步到 Discord「活動」分頁 |
 | M7 收尾指令 | ❌ 未開始 | `/event edit`／`cancel`／`invite`／`ping`、`/settings`、`/timezone` |
 
-**測試：372 個全過，ruff 乾淨。** M0–M4 都在本機（用開發者的私人 Discord
-伺服器 + 真實 Turso 資料庫）手動驗證過，不是只有單元測試。**M5（投票）目前
-只驗證過測試套件與 import／啟動正常，還沒有人在真實 Discord 上手動點過
-`/poll create` 走一輪完整流程**——這是下一個該做的驗證，不是「假設它能用」。
+**測試：391 個全過，ruff 乾淨。** M0–M4 都在本機（用開發者的私人 Discord
+伺服器 + 真實 Turso 資料庫）手動驗證過，不是只有單元測試。**M5（投票，含
+時段投票自動建立活動）目前只驗證過測試套件與 import／啟動正常，還沒有人
+在真實 Discord 上手動點過 `/poll create` 走一輪完整流程**——這是下一個該
+做的驗證，不是「假設它能用」。
 
-> **關於 M5 的實作來源**：這份文件的上一版是在 M5 開始前寫的。M5 的程式碼
-> （`src/domain/polls.py`／`src/bot/views_poll.py`／`src/bot/cogs/polls.py`／
-> `src/bot/cogs/_shared.py`，以及對 `client.py`／`embeds.py`／`events.py`／
-> `repo.py` 的修改）是在某次對話空檔被寫入 repo 的，寫的人已經讀過這份文件
-> 前一版並確實遵守了裡面列的每一條紀律（多伺服器範圍界定、`DynamicItem`
-> 持久化模式、原子交易、樂觀鎖）。程式碼審查過，邏輯正確，372 個測試全過，
-> 已經 commit——但既然連接手你的人都不確定這段程式碼的完整來歷，你接手後
-> 第一件事最好是自己動手測一次 `/poll create`，不要只憑「測試過了」就假設
-> 沒問題。
+> **關於 M5 的實作來源**：M5 的程式碼是分兩次、在不同的對話空檔被寫入
+> repo 的，都不是「當下這次對話」直接寫的，但每次接手後都有照樣審查、
+> 跑測試、跑 lint、對照這份文件的紀律逐條檢查過，不是照單全收：
+> 1. 第一批（`src/domain/polls.py`／`views_poll.py`／`cogs/polls.py`／
+>    `cogs/_shared.py` 的初版）做出 `/poll create|close|results` 基本功能，
+>    選項用單行 `|` 分隔輸入。
+> 2. 第二批補上「時段投票（`kind=time_slot`）關閉時自動挑最高票時段建立
+>    正式活動」——這是 [PLAN.md](PLAN.md) §6 Phase 2 第 1 項規劃的招牌
+>    功能，原本沒做，補完過程記在 [Revise.md](Revise.md)（**這份檔案不
+>    進版控**，`.gitignore` 現在排除所有 `.md` 只留 README，若找不到
+>    去問使用者要）。同一次也把選項輸入從單行 `|` 分隔改成 Modal 多行
+>    文字框（`modals_poll.py`），理由跟 `/event create` 用 Modal 收活動
+>    內容一樣。
+>
+> 兩批都遵守了既有紀律（多伺服器範圍界定、`DynamicItem` 持久化、原子交易、
+> 樂觀鎖），且第二批明確採用了 Revise.md 裡寫的設計決策（平票/沒人投票都
+> 不自動建立、參加對象＝全部投票者不分投給哪個選項）。**你接手後第一件事
+> 最好還是自己動手測一次 `/poll create` 走完整流程（含 `kind=time_slot`
+> 關閉後自動建立活動那條路徑），不要只憑「測試過了」就假設沒問題**——這
+> 條提醒本身也已經被驗證過一次還不夠，值得繼續留著。
 
 ### 目前實際存在的指令
 
@@ -76,10 +88,16 @@ Apollo／Raid-Helper 這類商業 bot（它們的核心功能都鎖在 $3.5–5/
                                 建立活動，time 留空會跳出日期時間挑選器
 /event list [scope] [limit]    列出活動（upcoming/mine/all）
 /event info <event_id>         查看單一活動詳情
-/poll create question options multi? anonymous? allow_change? closes? kind?
-                                建立投票，options 用 | 分隔，kind=time_slot
-                                會把選項解析成時間顯示 Discord 時間戳
-/poll close <id>               關閉投票（僅建立者可操作），公告卡片同步停用
+/poll create question multi? anonymous? allow_change? closes? kind?
+                                建立投票，送出後彈 Modal 收選項（多行文字框，
+                                一行一個，2～25 個）。kind=time_slot 時選項
+                                會被解析成時間、顯示 Discord 時間戳
+/poll close <id>               關閉投票（僅建立者可操作）。若是 time_slot
+                                投票，會挑最高票時段自動建立正式活動並發布
+                                公告（平票／沒人投票／獲勝選項時間資料損毀
+                                都刻意不自動建立，回覆訊息請使用者自行
+                                `/event create`）。參加對象＝這個投票裡所有
+                                投過票的人，不分投給哪個選項
 /poll results <id>              查看投票結果
 ```
 
