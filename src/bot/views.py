@@ -61,6 +61,25 @@ class ConfirmEventView(discord.ui.View):
         self.restrict_rsvp = restrict_rsvp
         self.message: discord.Message | None = None
 
+    async def _resolve_channel(
+        self, interaction: discord.Interaction, channel_id: int
+    ) -> discord.abc.Messageable | None:
+        """公告要發到哪個頻道——多半跟 `interaction.channel` 是同一個，只有
+        `guild_settings.announce_channel_id` 設定了、且跟指令所在頻道不同時
+        才會不一樣。比照其他 cog 的 `_resolve_channel`：優先吃 guild 的頻道
+        快取，沒有才補一次 API 呼叫。這裡沒有 `self.bot` 可用（`ConfirmEventView`
+        是純 View，不是 cog），改用 `interaction.client`——兩者是同一個
+        Bot 實例。
+        """
+        guild = interaction.guild
+        channel = guild.get_channel(channel_id) if guild is not None else None
+        if channel is not None:
+            return channel
+        try:
+            return await interaction.client.fetch_channel(channel_id)
+        except discord.HTTPException:
+            return None
+
     async def _finish(self, interaction: discord.Interaction | None, content: str) -> None:
         for child in self.children:
             if isinstance(child, discord.ui.Item):
@@ -125,7 +144,11 @@ class ConfirmEventView(discord.ui.View):
             rsvp_summary = build_rsvp_summary(interaction.guild, invitees, rsvps=[])
 
         message = None
-        channel = interaction.channel
+        # pending.channel_id 是 Events._create_impl 那一步就定案的公告頻道
+        # （見該方法的說明：guild_settings.announce_channel_id 設定了就不是
+        # interaction 所在頻道，兩者這裡可能不同，一律照 pending.channel_id
+        # 走，不是回頭用 interaction.channel）。
+        channel = await self._resolve_channel(interaction, pending.channel_id)
         # 用 duck typing 而非 isinstance(..., discord.abc.Messageable)：
         # 兩者在正常情況下等價（能收到指令互動的頻道一定能發訊息），但前者
         # 讓測試可以用簡單的假物件替代，不必仿造 Discord 內部的頻道類別階層。

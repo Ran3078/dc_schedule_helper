@@ -9,6 +9,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
+
 from src.bot.modals import PendingEvent
 from src.bot.views import ConfirmEventView
 from src.bot.views_rsvp import RsvpButton
@@ -42,13 +44,24 @@ def _make_interaction(*, sent_message_id: int = 999999, guild=None) -> MagicMock
     所以 role.members 這類展開不會拋例外，只是會展開成空集合 —— 對不檢查
     RSVP 統計內容的測試無害。要驗證未回覆名單正確展開時才需要傳入真正配置
     過 get_role/members 的 guild。
+
+    `create_scheduled_event` 是 AsyncMock：`_confirm_impl` 現在（M6）一律會
+    嘗試同步原生活動，沒有這個大部分測試會在 await 一個普通 MagicMock 時炸掉
+    （這裡的假 guild_settings 查不到列，`sync_native_events` 判斷式因此預設
+    當作「開啟」）。想測試「同步失敗」的情境才需要另外覆寫這個屬性。
+
+    `guild.get_channel` 預設指回 `interaction.channel`：`_confirm_impl`
+    （M7 起）改用 `_resolve_channel(interaction, pending.channel_id)` 找公告
+    頻道，不是直接信任 `interaction.channel`——多數測試裡 `pending.channel_id`
+    就是 `CHANNEL_ID`，這裡讓 `get_channel(CHANNEL_ID)` 也回同一個假頻道，
+    行為才會跟改動前一致。想測試「公告頻道跟指令所在頻道不同」才需要另外
+    覆寫這個屬性。
     """
     interaction = MagicMock()
     interaction.response = AsyncMock()
     # is_done() 在真正的 discord.py 裡是同步方法（回傳 bool），
     # 若讓 AsyncMock 自動生成屬性會變成協程，"not is_done()" 恆為 False。
     interaction.response.is_done = MagicMock(return_value=False)
-    interaction.guild = guild if guild is not None else MagicMock(id=GUILD_ID)
 
     sent_message = MagicMock()
     sent_message.id = sent_message_id
@@ -56,6 +69,19 @@ def _make_interaction(*, sent_message_id: int = 999999, guild=None) -> MagicMock
 
     interaction.channel = AsyncMock()
     interaction.channel.send = AsyncMock(return_value=sent_message)
+    # _resolve_channel 的備援路徑（guild 拿不到頻道，或 guild 本身是 None）
+    # 會落到 interaction.client.fetch_channel——不管這次測試有沒有用到，
+    # 都先接好，不然會在 await 一個沒配置的 MagicMock 屬性時炸掉。
+    interaction.client.fetch_channel = AsyncMock(return_value=interaction.channel)
+
+    if guild is not None:
+        interaction.guild = guild
+    else:
+        interaction.guild = MagicMock(id=GUILD_ID)
+        fake_scheduled_event = MagicMock(id=555555)
+        interaction.guild.create_scheduled_event = AsyncMock(return_value=fake_scheduled_event)
+        interaction.guild.get_channel = MagicMock(return_value=interaction.channel)
+
     return interaction
 
 
@@ -261,6 +287,57 @@ class TestConfirmWithInvitees:
         assert "<@111>" in field.value
 
 
+class TestNativeEventSync:
+    """M6：發布活動時同步建立原生 Scheduled Event（`guild_settings.sync_native_events`
+    預設開啟）。"""
+
+    async def test_syncs_by_default_and_records_discord_event_id(self, db) -> None:
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=event_id, pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        interaction.guild.create_scheduled_event.assert_awaited_once()
+        row = await repo.owned_event(event_id, GUILD_ID)
+        assert row["discord_event_id"] == "555555"
+
+    async def test_skips_sync_when_guild_setting_disabled(self, db) -> None:
+        await repo.ensure_guild(GUILD_ID, "Asia/Taipei")
+        await db.execute(
+            "UPDATE guild_settings SET sync_native_events = 0 WHERE guild_id = ?",
+            (str(GUILD_ID),),
+        )
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=event_id, pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        interaction.guild.create_scheduled_event.assert_not_awaited()
+        row = await repo.owned_event(event_id, GUILD_ID)
+        assert row["discord_event_id"] is None
+
+    async def test_sync_failure_does_not_affect_publish_confirmation_text(self, db) -> None:
+        """同步原生活動是附加功能，失敗不該讓使用者以為活動本身建立失敗了。"""
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=event_id, pending=pending, description=None)
+        interaction = _make_interaction()
+        interaction.guild.create_scheduled_event = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(status=403), "forbidden")
+        )
+
+        await view._confirm_impl(interaction)  # 不應拋例外
+
+        row = await repo.owned_event(event_id, GUILD_ID)
+        assert row["discord_event_id"] is None
+        _, kwargs = interaction.response.edit_message.call_args
+        assert "https://discord.com/channels" in kwargs["content"]
+
+
 class TestTimeout:
     async def test_on_timeout_edits_stored_message_reference(self, db) -> None:
         """逾時清理走 self.message.edit，不是 interaction —— 此時互動早已過期。"""
@@ -323,8 +400,17 @@ class TestConfirmAttachesRsvp:
         view = ConfirmEventView(
             event_id=event_id, pending=pending, description=None, user_ids=[111, 222]
         )
-        guild = SimpleNamespace(id=GUILD_ID, get_role=lambda rid: None, members=[])
+        guild = SimpleNamespace(
+            id=GUILD_ID,
+            get_role=lambda rid: None,
+            members=[],
+            create_scheduled_event=AsyncMock(return_value=MagicMock(id=555555)),
+        )
         interaction = _make_interaction(guild=guild)
+        # _resolve_channel 找頻道靠 guild.get_channel；這裡指回 interaction.channel
+        # 讓 channel.send 的斷言還是打在同一個假物件上（見 _make_interaction 的
+        # 預設 guild 分支同樣的作法）。
+        guild.get_channel = lambda channel_id: interaction.channel
 
         await view._confirm_impl(interaction)
 

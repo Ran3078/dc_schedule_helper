@@ -43,7 +43,7 @@ RSVP_STATUSES = ("yes", "maybe", "no")
 
 
 class RsvpButton(discord.ui.DynamicItem[discord.ui.Button], template=_TEMPLATE):
-    def __init__(self, *, event_id: str, status: str) -> None:
+    def __init__(self, *, event_id: str, status: str, disabled: bool = False) -> None:
         self.event_id = event_id
         self.status = status
         super().__init__(
@@ -52,6 +52,7 @@ class RsvpButton(discord.ui.DynamicItem[discord.ui.Button], template=_TEMPLATE):
                 emoji=_EMOJIS[status],
                 style=_STYLES[status],
                 custom_id=build_custom_id("ev", "rsvp", event_id, status),
+                disabled=disabled,
             )
         )
 
@@ -79,6 +80,13 @@ class RsvpButton(discord.ui.DynamicItem[discord.ui.Button], template=_TEMPLATE):
             await interaction.response.send_message(
                 "找不到這個活動，可能已被取消或刪除。", ephemeral=True
             )
+            return
+
+        if event["status"] != "scheduled":
+            # 活動已取消：/event cancel 會把公告卡片的按鈕重繪成 disabled，
+            # 但 Discord 端如果剛好還沒收到那次編輯（或使用者手上是舊快取），
+            # 這裡是最後一道防線，不讓已取消的活動還能被 RSVP。
+            await interaction.response.send_message("這個活動已經取消了。", ephemeral=True)
             return
 
         if event["restrict_rsvp"]:
@@ -125,13 +133,18 @@ class RsvpButton(discord.ui.DynamicItem[discord.ui.Button], template=_TEMPLATE):
             log.warning("更新活動 %s 的公告訊息失敗", self.event_id, exc_info=True)
 
 
-def build_rsvp_view(event_id: str) -> discord.ui.View:
+def build_rsvp_view(event_id: str, *, disabled: bool = False) -> discord.ui.View:
     """建立活動公告要附帶的 RSVP 按鈕列。只在**第一次發布**時呼叫一次
     （見 views.ConfirmEventView._confirm_impl）—— 之後按鈕的持久性完全靠
     上面 RsvpButton 的 DynamicItem 機制，不需要重新附加任何東西，bot 重啟
     也不用重新呼叫這個函式去「補回」舊訊息的按鈕。
+
+    `disabled=True` 給 `/event cancel` 用：取消活動後重繪一個全部 disabled
+    的版本 edit 上去，視覺上明確表示不能再 RSVP 了（比照
+    `views_poll.build_poll_vote_view` 的 `disabled` 參數同樣的用法）；
+    `RsvpButton.callback` 裡的活動狀態檢查是最後一道防呆備援。
     """
     view = discord.ui.View(timeout=None)
     for status in RSVP_STATUSES:
-        view.add_item(RsvpButton(event_id=event_id, status=status))
+        view.add_item(RsvpButton(event_id=event_id, status=status, disabled=disabled))
     return view

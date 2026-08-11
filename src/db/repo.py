@@ -68,6 +68,41 @@ async def count_guilds() -> int:
     return await engine.query_scalar("SELECT COUNT(*) FROM guild_settings") or 0
 
 
+async def update_guild_settings(guild_id: int | str, **fields: Any) -> None:
+    """`/settings` 用：只更新有帶到的欄位。
+
+    `fields` 的 key 一律來自呼叫端自己的程式碼（`cogs/settings.py` 裡固定的
+    欄位名清單），不是使用者輸入的文字，動態組 `SET col = ?` 不是 SQL
+    injection 風險——這跟「值不能信任、要用參數化查詢」是兩回事，值本來就還是
+    走參數化。沒有任何欄位要改（呼叫端沒傳東西進來）就直接不做事。
+    """
+    if not fields:
+        return
+    set_clause = ", ".join(f"{key} = ?" for key in fields)
+    params = [*fields.values(), now_ms(), str(guild_id)]
+    await engine.execute(
+        f"UPDATE guild_settings SET {set_clause}, updated_at = ? WHERE guild_id = ?",
+        params,
+    )
+
+
+async def get_user_prefs(user_id: int | str) -> Row | None:
+    return await engine.query_one(
+        "SELECT * FROM user_prefs WHERE user_id = ?", (str(user_id),)
+    )
+
+
+async def set_user_tz(user_id: int | str, tz: str) -> None:
+    """`/timezone set` 用：寫入個人時區覆寫，只影響「輸入解析」（見
+    `cogs/_shared.resolve_user_tz`），不影響任何已經存好的 UTC epoch。"""
+    now = now_ms()
+    await engine.execute(
+        "INSERT INTO user_prefs (user_id, tz, updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(user_id) DO UPDATE SET tz = excluded.tz, updated_at = excluded.updated_at",
+        (str(user_id), tz, now),
+    )
+
+
 # ── 母體歸屬檢查 ──────────────────────────────────────────────────────────
 
 
@@ -195,6 +230,25 @@ async def list_event_invitees(event_id: str, guild_id: int | str) -> list[Row]:
         "WHERE ei.event_id = ? AND e.guild_id = ?",
         (event_id, str(guild_id)),
     )
+
+
+async def add_event_invitee(
+    event_id: str, guild_id: int | str, target_type: str, target_id: int | str
+) -> bool:
+    """`/event invite` 用：追加單一個邀請對象。回傳 False 代表活動不存在，
+    或不屬於這個伺服器（沒有寫入任何東西）。
+
+    `INSERT OR IGNORE ... WHERE EXISTS` 手法跟 `create_event` 寫
+    `event_invitees` 那批是同一套，這裡是拆成單一列版本；重複邀請同一個
+    對象會被 IGNORE 吃掉，不是錯誤（`event_invitees` 的主鍵是
+    `(event_id, target_type, target_id)`）。
+    """
+    rowcount = await engine.execute(
+        "INSERT OR IGNORE INTO event_invitees (event_id, target_type, target_id, required) "
+        "SELECT ?, ?, ?, 0 WHERE EXISTS (SELECT 1 FROM events WHERE id = ? AND guild_id = ?)",
+        (event_id, target_type, str(target_id), event_id, str(guild_id)),
+    )
+    return rowcount > 0
 
 
 async def upsert_rsvp(
@@ -335,6 +389,31 @@ async def cancel_event(event_id: str, guild_id: int | str) -> bool:
         "UPDATE events SET status = 'cancelled', updated_at = ? "
         "WHERE id = ? AND guild_id = ? AND status = 'scheduled'",
         (now_ms(), event_id, str(guild_id)),
+    )
+    return rowcount > 0
+
+
+async def update_event(
+    event_id: str,
+    guild_id: int | str,
+    *,
+    title: str,
+    starts_at_utc: int,
+    location: str | None,
+    description: str | None,
+) -> bool:
+    """`/event edit` 用：覆寫標題/時間/地點/內容這四欄。
+
+    `EventEditModal` 的欄位一律用目前的值預先帶好，送出時四個欄位都會有
+    值（不管使用者實際改了哪個），所以這裡是整批覆寫，不是「只更新有變的
+    欄位」那種部分更新——比 `update_guild_settings` 的動態 SET 簡單，不需要
+    分辨「沒給」跟「給了 None」。`ends_at_utc` 這輪不開放編輯（`PLAN.md`
+    原始設計只講標題/時間/地點/內容），維持不動。
+    """
+    rowcount = await engine.execute(
+        "UPDATE events SET title = ?, starts_at_utc = ?, location = ?, "
+        "description = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
+        (title, starts_at_utc, location, description, now_ms(), event_id, str(guild_id)),
     )
     return rowcount > 0
 

@@ -20,11 +20,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
 log = logging.getLogger(__name__)
+
+Row = dict[str, Any]
+
+# 跟 cogs/events.py 的 MAX_TITLE_LENGTH 同一個數字——這裡不 import 那邊的常數，
+# 是為了避免 modals.py ↔ cogs/events.py 形成循環參照（cogs/events.py 本來就會
+# import 這個檔案的 PendingEvent）。
+_MAX_TITLE_LENGTH = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +163,146 @@ class EventDescriptionModal(discord.ui.Modal, title="活動內容（選填）"):
     ) -> None:
         log.exception("建立活動時發生未預期錯誤", exc_info=error)
         message = "建立活動時發生錯誤，請稍後再試一次。"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+
+class EventEditModal(discord.ui.Modal, title="編輯活動"):
+    """`/event edit` 用：四個欄位（標題/時間/地點/內容）全部用目前的值預先
+    帶好——`default=` 是建構參數，不是建構後才賦值，不會踩到
+    `modals_poll.PollDetailsModal` 已經記過的 `.label` deprecation 那個坑
+    （這裡也沒有動態換 label，純粹是每個 instance 的 default 值不同，本來
+    就得在 `__init__` 動態建）。
+
+    使用者沒改某個欄位、原樣送出時，`time_input` 的 `default` 是用
+    `lib/timeparse.parse_datetime` 認得的格式（`%Y-%m-%d %H:%M`）格式化的，
+    重新解析回去會是同一個 epoch，不會因為「沒改」而變成一個新的時間。
+    """
+
+    def __init__(self, *, event: Row, event_id: str, guild_id: int, tz: str) -> None:
+        super().__init__()
+        self.event_id = event_id
+        self.guild_id = guild_id
+        self.tz = tz
+
+        try:
+            zone = ZoneInfo(tz)
+        except ZoneInfoNotFoundError:
+            zone = ZoneInfo("Asia/Taipei")
+        start_text = datetime.fromtimestamp(
+            event["starts_at_utc"] / 1000, tz=zone
+        ).strftime("%Y-%m-%d %H:%M")
+
+        self.title_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
+            label="標題",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=_MAX_TITLE_LENGTH,
+            default=event["title"],
+        )
+        self.add_item(self.title_input)
+
+        self.time_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
+            label="時間",
+            style=discord.TextStyle.short,
+            required=True,
+            default=start_text,
+            placeholder="2026-08-01 20:00",
+        )
+        self.add_item(self.time_input)
+
+        self.location_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
+            label="地點（選填）",
+            style=discord.TextStyle.short,
+            required=False,
+            default=event.get("location") or None,
+        )
+        self.add_item(self.location_input)
+
+        self.description_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
+            label="內容（選填）",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=1000,
+            default=event.get("description") or None,
+        )
+        self.add_item(self.description_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from src.bot.embeds import build_event_embed
+        from src.bot.native_events import sync_edit
+        from src.db import repo
+        from src.domain.rsvp import build_rsvp_summary
+        from src.lib.timeparse import TimeParseError, parse_datetime
+
+        title = self.title_input.value.strip()
+        if not title:
+            await interaction.response.send_message("活動標題不能是空的。", ephemeral=True)
+            return
+
+        try:
+            starts_at_utc = parse_datetime(self.time_input.value, self.tz)
+        except TimeParseError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        location = self.location_input.value.strip() or None
+        description = self.description_input.value.strip() or None
+
+        ok = await repo.update_event(
+            self.event_id,
+            self.guild_id,
+            title=title,
+            starts_at_utc=starts_at_utc,
+            location=location,
+            description=description,
+        )
+        if not ok:
+            await interaction.response.send_message(
+                "找不到這個活動，可能已被刪除。", ephemeral=True
+            )
+            return
+
+        event_row = await repo.owned_event(self.event_id, self.guild_id)
+        assert event_row is not None  # 剛剛才更新成功
+        invitees = await repo.list_event_invitees(self.event_id, self.guild_id)
+        rsvps = await repo.list_rsvps(self.event_id, self.guild_id)
+        summary = (
+            build_rsvp_summary(interaction.guild, invitees, rsvps)
+            if interaction.guild is not None
+            else None
+        )
+
+        # 重繪公告卡片：跟 views_rsvp.RsvpButton._refresh_announcement 同一種
+        # 「編輯已存在的公告訊息」手法，只是這裡沒有現成的 interaction.message
+        # 可用（觸發編輯的是 Modal 這個獨立 interaction，不是按在公告訊息上的
+        # 元件），改用 interaction.client 找頻道、憑 message_id 抓訊息來編輯。
+        if event_row["message_id"] and event_row["channel_id"]:
+            channel = interaction.client.get_channel(int(event_row["channel_id"]))
+            if channel is None:
+                try:
+                    channel = await interaction.client.fetch_channel(
+                        int(event_row["channel_id"])
+                    )
+                except discord.HTTPException:
+                    channel = None
+            if channel is not None:
+                try:
+                    message = await channel.fetch_message(int(event_row["message_id"]))
+                    await message.edit(embed=build_event_embed(event_row, invitees, summary))
+                except discord.HTTPException:
+                    log.warning("編輯活動 %s 後更新公告訊息失敗", self.event_id, exc_info=True)
+
+        if event_row["discord_event_id"] and interaction.guild is not None:
+            await sync_edit(interaction.guild, int(event_row["discord_event_id"]), event_row)
+
+        await interaction.response.send_message("✅ 活動已更新。", ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        log.exception("編輯活動時發生未預期錯誤", exc_info=error)
+        message = "編輯活動時發生錯誤，請稍後再試一次。"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:

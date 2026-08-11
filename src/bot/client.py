@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from src.bot.views_poll import PollVoteSelect
@@ -14,13 +15,13 @@ from src.db import repo
 
 log = logging.getLogger(__name__)
 
-# 隨里程碑逐步加入：settings
 INITIAL_COGS: tuple[str, ...] = (
     "src.bot.cogs.meta",
     "src.bot.cogs.events",
     "src.bot.cogs.polls",
     "src.bot.cogs.scheduler",
     "src.bot.cogs.native_events",
+    "src.bot.cogs.settings",  # 同一個模組裡 Settings／Timezone 兩個 cog 都在
 )
 
 
@@ -66,6 +67,11 @@ class ScheduleBot(commands.Bot):
         # 樣板比對即時重建。
         self.add_dynamic_items(RsvpButton, PollVoteSelect)
 
+        # 見 _on_app_command_error 的說明：沒有這個，指令處理中任何沒被接住的
+        # 例外（最常見是 DB 連線瞬斷）對使用者來說就是「該申請未回應」，
+        # 看起來像 bot 掛了，其實只是那一次指令沒回覆。
+        self.tree.on_error = self._on_app_command_error
+
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
@@ -90,6 +96,30 @@ class ScheduleBot(commands.Bot):
                 len(synced_dev),
             )
 
+    async def _on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        """指令處理過程中任何未攔截的例外，最後都會落到這裡。
+
+        discord.py 預設的 `CommandTree.on_error` 只會把例外寫進 log，不會回覆
+        使用者任何東西——對使用者來說，這代表 Discord 用戶端在 3 秒後顯示
+        「該申請未回應」，看起來像 bot 整個掛掉，實際上只是那一次指令沒接住
+        例外。DB 連線瞬斷（見 `db/engine.py` 開頭對 Turso 閒置逾時的說明，
+        `scheduler.py` 的排程迴圈已經吃過一次虧）是最常見的觸發原因，這裡
+        比照同樣的精神：讓使用者知道「失敗了，可以再試一次」，比讓互動默默
+        逾時對使用者友善得多。
+        """
+        command_name = interaction.command.name if interaction.command else "?"
+        log.exception("指令 /%s 發生未預期錯誤", command_name, exc_info=error)
+
+        message = "指令執行時發生錯誤，請稍後再試一次。"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            pass  # interaction 可能真的已經逾期失效，沒有更多能做的
 
     async def on_ready(self) -> None:
         assert self.user is not None

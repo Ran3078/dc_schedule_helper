@@ -226,6 +226,95 @@ class TestCancelEvent:
         assert row["status"] == "scheduled"
 
 
+class TestUpdateEvent:
+    async def test_overwrites_all_four_fields(self, db) -> None:
+        event_id = await _create(
+            db, title="舊標題", starts_at_utc=NOW + HOUR, location="舊地點"
+        )
+        ok = await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="新標題",
+            starts_at_utc=NOW + 2 * HOUR,
+            location="新地點",
+            description="新內容",
+        )
+        assert ok is True
+
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["title"] == "新標題"
+        assert row["starts_at_utc"] == NOW + 2 * HOUR
+        assert row["location"] == "新地點"
+        assert row["description"] == "新內容"
+
+    async def test_can_clear_location_and_description(self, db) -> None:
+        event_id = await _create(db, location="舊地點", description="舊內容")
+        await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="標題",
+            starts_at_utc=NOW + HOUR,
+            location=None,
+            description=None,
+        )
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["location"] is None
+        assert row["description"] is None
+
+    async def test_does_not_touch_ends_at_utc(self, db) -> None:
+        """這輪不開放編輯結束時間，維持原值。"""
+        event_id = await _create(db, ends_at_utc=NOW + 3 * HOUR)
+        await repo.update_event(
+            event_id, GUILD_A, title="標題", starts_at_utc=NOW + HOUR,
+            location=None, description=None,
+        )
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["ends_at_utc"] == NOW + 3 * HOUR
+
+    async def test_refuses_cross_guild_update(self, db) -> None:
+        event_id = await _create(db, guild_id=GUILD_A, title="原標題")
+        ok = await repo.update_event(
+            event_id, GUILD_B, title="被改的標題", starts_at_utc=NOW + HOUR,
+            location=None, description=None,
+        )
+        assert ok is False
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["title"] == "原標題"
+
+    async def test_returns_false_for_nonexistent_event(self, db) -> None:
+        ok = await repo.update_event(
+            "nope", GUILD_A, title="x", starts_at_utc=NOW, location=None, description=None
+        )
+        assert ok is False
+
+
+class TestAddEventInvitee:
+    async def test_adds_user_invitee(self, db) -> None:
+        event_id = await _create(db)
+        ok = await repo.add_event_invitee(event_id, GUILD_A, "user", USER_2)
+        assert ok is True
+        invitees = await repo.list_event_invitees(event_id, GUILD_A)
+        assert invitees[0]["target_type"] == "user"
+        assert invitees[0]["target_id"] == USER_2
+
+    async def test_duplicate_invitee_is_ignored_not_an_error(self, db) -> None:
+        event_id = await _create(db)
+        await repo.add_event_invitee(event_id, GUILD_A, "role", "r1")
+        await repo.add_event_invitee(event_id, GUILD_A, "role", "r1")  # 不應拋例外
+        invitees = await repo.list_event_invitees(event_id, GUILD_A)
+        assert len(invitees) == 1
+
+    async def test_refuses_cross_guild_insert(self, db) -> None:
+        event_id = await _create(db, guild_id=GUILD_A)
+        ok = await repo.add_event_invitee(event_id, GUILD_B, "user", USER_2)
+        assert ok is False
+        assert await repo.list_event_invitees(event_id, GUILD_A) == []
+
+    async def test_returns_false_for_nonexistent_event(self, db) -> None:
+        ok = await repo.add_event_invitee("nope", GUILD_A, "user", USER_2)
+        assert ok is False
+
+
 class TestListEventsUpcoming:
     async def test_excludes_past_events(self, db) -> None:
         await _create(db, title="過去的活動", starts_at_utc=NOW - HOUR)

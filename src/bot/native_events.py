@@ -59,3 +59,63 @@ async def sync_create(guild: discord.Guild, event: Row) -> int | None:
         return None
 
     return scheduled.id
+
+
+async def _resolve_scheduled_event(
+    guild: discord.Guild, discord_event_id: int
+) -> discord.ScheduledEvent | None:
+    """先吃快取（`get_scheduled_event`），沒有才補一次 API 呼叫
+    （`fetch_scheduled_event`）——理由同 `scheduler.py`／`polls.py` 的
+    `_resolve_channel`。找不到（例如使用者自己手動把原生活動刪了）回傳 None，
+    呼叫端當成「沒什麼好同步的」處理，不是錯誤。
+    """
+    scheduled = guild.get_scheduled_event(discord_event_id)
+    if scheduled is not None:
+        return scheduled
+    try:
+        return await guild.fetch_scheduled_event(discord_event_id)
+    except discord.HTTPException:
+        return None
+
+
+async def sync_edit(guild: discord.Guild, discord_event_id: int, event: Row) -> bool:
+    """活動編輯後同步更新對應的原生 Scheduled Event。找不到／API 失敗都只
+    log，回傳 False——不影響活動本身的編輯已經成功這件事。"""
+    scheduled = await _resolve_scheduled_event(guild, discord_event_id)
+    if scheduled is None:
+        return False
+
+    start = datetime.fromtimestamp(event["starts_at_utc"] / 1000, tz=UTC)
+    end_epoch = resolve_native_end_time(event["starts_at_utc"], event["ends_at_utc"])
+    end = datetime.fromtimestamp(end_epoch / 1000, tz=UTC)
+
+    kwargs: dict[str, Any] = {}
+    if event.get("description"):
+        kwargs["description"] = event["description"]
+
+    try:
+        await scheduled.edit(
+            name=event["title"][:_MAX_NAME_LEN],
+            start_time=start,
+            end_time=end,
+            location=resolve_native_location(event["location"])[:_MAX_LOCATION_LEN],
+            **kwargs,
+        )
+    except discord.HTTPException:
+        log.warning("活動 %s 同步更新原生活動失敗", event["id"], exc_info=True)
+        return False
+    return True
+
+
+async def sync_cancel(guild: discord.Guild, discord_event_id: int) -> bool:
+    """取消活動時一併取消對應的原生 Scheduled Event。"""
+    scheduled = await _resolve_scheduled_event(guild, discord_event_id)
+    if scheduled is None:
+        return False
+
+    try:
+        await scheduled.cancel()
+    except discord.HTTPException:
+        log.warning("取消原生活動 %s 失敗", discord_event_id, exc_info=True)
+        return False
+    return True

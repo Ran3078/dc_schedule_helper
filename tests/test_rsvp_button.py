@@ -164,6 +164,34 @@ class TestCallback:
         assert rows[0]["status"] == "no"
 
 
+class TestCancelledEvent:
+    """M7：/event cancel 會把公告卡片的按鈕重繪成 disabled，但這裡是最後一道
+    防呆——就算 Discord 端還沒收到那次編輯，已取消的活動也不該再被 RSVP。"""
+
+    async def test_rejects_rsvp_on_cancelled_event(self, db) -> None:
+        event_id = await _create_event(db)
+        await repo.cancel_event(event_id, GUILD_ID)
+        button = RsvpButton(event_id=event_id, status="yes")
+        interaction = _make_interaction()
+
+        await button.callback(interaction)
+
+        args, kwargs = interaction.response.send_message.call_args
+        assert "取消" in args[0]
+        assert kwargs["ephemeral"] is True
+        assert await repo.list_rsvps(event_id, GUILD_ID) == []
+
+    async def test_does_not_refresh_announcement_for_cancelled_event(self, db) -> None:
+        event_id = await _create_event(db)
+        await repo.cancel_event(event_id, GUILD_ID)
+        button = RsvpButton(event_id=event_id, status="yes")
+        interaction = _make_interaction()
+
+        await button.callback(interaction)
+
+        interaction.message.edit.assert_not_awaited()
+
+
 class TestRefreshAnnouncementResilience:
     async def test_message_edit_failure_does_not_raise(self, db) -> None:
         event_id = await _create_event(db)

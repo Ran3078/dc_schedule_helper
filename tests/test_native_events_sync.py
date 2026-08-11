@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from src.bot.native_events import sync_create
+from src.bot.native_events import sync_cancel, sync_create, sync_edit
 from src.domain.native_events import DEFAULT_LOCATION_TEXT
 
 NOW = 1_785_700_800_000  # 任意固定的 epoch ms，方便斷言
@@ -111,3 +111,100 @@ class TestSyncCreate:
         result = await sync_create(guild, _event())  # 不應拋例外
 
         assert result is None
+
+
+def _make_scheduled_event() -> MagicMock:
+    scheduled = MagicMock()
+    scheduled.edit = AsyncMock(return_value=scheduled)
+    scheduled.cancel = AsyncMock(return_value=scheduled)
+    return scheduled
+
+
+def _make_guild_with_cached_event(scheduled: MagicMock | None) -> MagicMock:
+    """`_resolve_scheduled_event` 先吃 `get_scheduled_event`（同步呼叫）——
+    這裡模擬「快取命中」的情境，`fetch_scheduled_event` 不會被呼叫到。"""
+    guild = MagicMock()
+    guild.get_scheduled_event = MagicMock(return_value=scheduled)
+    guild.fetch_scheduled_event = AsyncMock(return_value=scheduled)
+    return guild
+
+
+class TestSyncEdit:
+    async def test_edits_with_updated_fields(self) -> None:
+        scheduled = _make_scheduled_event()
+        guild = _make_guild_with_cached_event(scheduled)
+
+        result = await sync_edit(guild, 555, _event(title="改過的標題", location="新地點"))
+
+        assert result is True
+        scheduled.edit.assert_awaited_once()
+        _, kwargs = scheduled.edit.call_args
+        assert kwargs["name"] == "改過的標題"
+        assert kwargs["location"] == "新地點"
+
+    async def test_falls_back_to_default_location_when_missing(self) -> None:
+        scheduled = _make_scheduled_event()
+        guild = _make_guild_with_cached_event(scheduled)
+
+        await sync_edit(guild, 555, _event(location=None))
+
+        _, kwargs = scheduled.edit.call_args
+        assert kwargs["location"] == DEFAULT_LOCATION_TEXT
+
+    async def test_returns_false_when_event_not_found(self) -> None:
+        guild = _make_guild_with_cached_event(None)
+
+        result = await sync_edit(guild, 555, _event())  # 不應拋例外
+
+        assert result is False
+
+    async def test_falls_back_to_fetch_when_not_cached(self) -> None:
+        scheduled = _make_scheduled_event()
+        guild = MagicMock()
+        guild.get_scheduled_event = MagicMock(return_value=None)
+        guild.fetch_scheduled_event = AsyncMock(return_value=scheduled)
+
+        result = await sync_edit(guild, 555, _event())
+
+        assert result is True
+        guild.fetch_scheduled_event.assert_awaited_once_with(555)
+
+    async def test_returns_false_on_http_exception(self) -> None:
+        scheduled = _make_scheduled_event()
+        scheduled.edit = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(status=403), "forbidden")
+        )
+        guild = _make_guild_with_cached_event(scheduled)
+
+        result = await sync_edit(guild, 555, _event())  # 不應拋例外
+
+        assert result is False
+
+
+class TestSyncCancel:
+    async def test_cancels_the_scheduled_event(self) -> None:
+        scheduled = _make_scheduled_event()
+        guild = _make_guild_with_cached_event(scheduled)
+
+        result = await sync_cancel(guild, 555)
+
+        assert result is True
+        scheduled.cancel.assert_awaited_once()
+
+    async def test_returns_false_when_event_not_found(self) -> None:
+        guild = _make_guild_with_cached_event(None)
+
+        result = await sync_cancel(guild, 555)  # 不應拋例外——可能已經被手動刪除
+
+        assert result is False
+
+    async def test_returns_false_on_http_exception(self) -> None:
+        scheduled = _make_scheduled_event()
+        scheduled.cancel = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(status=403), "forbidden")
+        )
+        guild = _make_guild_with_cached_event(scheduled)
+
+        result = await sync_cancel(guild, 555)  # 不應拋例外
+
+        assert result is False
