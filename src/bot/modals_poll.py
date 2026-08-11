@@ -1,12 +1,19 @@
-"""`/poll create` 的選項輸入 Modal。
+"""`/poll create` 的說明／選項輸入 Modal。
 
-原本選項是塞在 `options` 這個指令參數裡、用 `|` 分隔（`PLAN.md` §5.1 的原始
-設計），實際用起來才發現在 Discord 的單行指令參數輸入框裡打 `2425|8/2 20:00`
-這種東西很不方便，尤其是排程投票要打好幾個時間。改成跟 `/event create` 的
-活動內容一樣，先收完其他指令參數，再彈一個 Modal 用多行文字框收選項——
-一行一個選項，跟打字直覺一致（見 `modals.py` 開頭對 Modal 只能是 interaction
-第一個回應的限制說明；這裡 Modal 是 `/poll create` 這個 interaction 的第一個
-回應，指令參數驗證都得在彈出 Modal 之前做完）。
+`kind` 在指令參數那一步就已經選定（見 `cogs/polls.py` 的
+`@app_commands.choices`），Modal 彈出時已經知道是排程投票還是一般投票，兩種
+情況的欄位因此不一樣：
+
+- 一律有「投票敘述（選填）」——跟 `/event create` 的活動內容欄位同樣性質。
+- `kind=generic` 才多一個「選項（多行）」欄位，使用者自己打，一行一個選項。
+- `kind=time_slot` **不**收選項文字——候選時段改用
+  `views_poll_timeslot.TimeSlotPickerView` 的日期/小時/分鐘下拉選單挑選，
+  全程不用打字（原本這裡會解析每行時間字串，那段邏輯搬到
+  `TimeSlotPickerView._on_create` 了）。
+
+Modal 只能是 interaction 的**第一個**回應（不能先 defer 再彈 Modal），所以
+`/poll create` 的 question/multi/anonymous/allow_change/closes/kind 驗證都得
+在彈出這個 Modal 之前做完（見 `cogs/polls.py` 的 `_create_impl`）。
 """
 
 from __future__ import annotations
@@ -17,22 +24,25 @@ import discord
 
 from src.bot.embeds import build_poll_embed
 from src.bot.views_poll import build_poll_vote_view
+from src.bot.views_poll_timeslot import PendingTimeSlotPoll, TimeSlotPickerView
 from src.db import repo
 from src.domain.polls import MAX_OPTIONS, MIN_OPTIONS, split_options
 from src.lib.ids import new_id
-from src.lib.timeparse import TimeParseError, discord_timestamp, parse_datetime
 
 log = logging.getLogger(__name__)
 
+_OPTIONS_LABEL = f"選項（每行一個，{MIN_OPTIONS}～{MAX_OPTIONS} 個）"
+_OPTIONS_PLACEHOLDER = "每行填一個選項，例如：\n火鍋\n燒肉\n拉麵"
 
-class PollOptionsModal(discord.ui.Modal, title="投票選項"):
-    options_input: discord.ui.TextInput[PollOptionsModal] = discord.ui.TextInput(
-        label=f"選項（每行一個，{MIN_OPTIONS}～{MAX_OPTIONS} 個）",
-        style=discord.TextStyle.paragraph,
-        required=True,
-        max_length=2000,
-        placeholder="火鍋\n燒肉\n拉麵\n\n排程投票每行填一個候選時間，例如：\n8/1 20:00\n8/2 20:00",
-    )
+
+class PollDetailsModal(discord.ui.Modal, title="投票內容"):
+    """`description_input`／`options_input` 刻意不宣告成類別屬性，全部在
+    `__init__` 用建構參數生出來——`discord.ui.TextInput` 建構後才去改
+    `.label` 在目前 discord.py 版本會觸發 `DeprecationWarning`（未來改走
+    `discord.ui.Label` 包裝元件），而且 `options_input` 本來就只有
+    `kind=generic` 才需要存在，用 `add_item()` 動態加比宣告成永遠存在的類別
+    屬性更貼近實際情況。
+    """
 
     def __init__(
         self,
@@ -54,9 +64,55 @@ class PollOptionsModal(discord.ui.Modal, title="投票選項"):
         self.kind = kind
         self.tz = tz
 
+        self.description_input: discord.ui.TextInput[PollDetailsModal] = discord.ui.TextInput(
+            label="投票敘述（選填）",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+            placeholder="例如：這次要約平日還是假日晚上",
+        )
+        self.add_item(self.description_input)
+
+        self.options_input: discord.ui.TextInput[PollDetailsModal] | None = None
+        if kind == "generic":
+            self.options_input = discord.ui.TextInput(
+                label=_OPTIONS_LABEL,
+                style=discord.TextStyle.paragraph,
+                required=True,
+                max_length=2000,
+                placeholder=_OPTIONS_PLACEHOLDER,
+            )
+            self.add_item(self.options_input)
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         assert interaction.guild_id is not None  # /poll create 本身已 guild_only()
 
+        description = self.description_input.value.strip() or None
+
+        if self.kind == "time_slot":
+            # 候選時段改用下拉選單挑，不在這裡解析任何時間字串——見
+            # TimeSlotPickerView._on_create。
+            picker = TimeSlotPickerView(
+                params=PendingTimeSlotPoll(
+                    guild_id=interaction.guild_id,
+                    channel_id=interaction.channel_id,
+                    creator_id=interaction.user.id,
+                    question=self.question,
+                    multi=self.multi,
+                    anonymous=self.anonymous,
+                    allow_change=self.allow_change,
+                    closes_at=self.closes_at,
+                    description=description,
+                ),
+                tz=self.tz,
+            )
+            await interaction.response.send_message(
+                embed=picker.build_embed(), view=picker, ephemeral=True
+            )
+            picker.message = await interaction.original_response()
+            return
+
+        assert self.options_input is not None  # kind=generic 時一定有這個欄位
         raw_options = split_options(self.options_input.value)
         if not (MIN_OPTIONS <= len(raw_options) <= MAX_OPTIONS):
             await interaction.response.send_message(
@@ -65,20 +121,7 @@ class PollOptionsModal(discord.ui.Modal, title="投票選項"):
                 ephemeral=True,
             )
             return
-
-        option_pairs: list[tuple[str, str | None]] = []
-        if self.kind == "time_slot":
-            for raw in raw_options:
-                try:
-                    epoch = parse_datetime(raw, self.tz)
-                except TimeParseError as exc:
-                    await interaction.response.send_message(
-                        f"選項「{raw}」不是合法的時間：{exc}", ephemeral=True
-                    )
-                    return
-                option_pairs.append((discord_timestamp(epoch, "F"), str(epoch)))
-        else:
-            option_pairs = [(raw[:100], None) for raw in raw_options]
+        option_pairs = [(raw[:100], None) for raw in raw_options]
 
         poll_id = new_id()
         await repo.create_poll(
@@ -93,6 +136,7 @@ class PollOptionsModal(discord.ui.Modal, title="投票選項"):
             anonymous=self.anonymous,
             allow_change=self.allow_change,
             closes_at=self.closes_at,
+            description=description,
         )
 
         poll = await repo.owned_poll(poll_id, interaction.guild_id)

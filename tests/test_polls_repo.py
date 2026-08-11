@@ -58,6 +58,16 @@ class TestCreatePoll:
         assert poll["anonymous"] == 1
         assert poll["allow_change"] == 0
 
+    async def test_description_is_stored_when_given(self, db) -> None:
+        poll_id = await _create_poll(db, description="這次要約平日還是假日晚上")
+        poll = await repo.owned_poll(poll_id, GUILD_A)
+        assert poll["description"] == "這次要約平日還是假日晚上"
+
+    async def test_description_defaults_to_none(self, db) -> None:
+        poll_id = await _create_poll(db)
+        poll = await repo.owned_poll(poll_id, GUILD_A)
+        assert poll["description"] is None
+
 
 class TestOwnedPollMultiGuildIsolation:
     async def test_wrong_guild_returns_none(self, db) -> None:

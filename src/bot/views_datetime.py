@@ -35,8 +35,8 @@ from src.bot.modals import PendingEvent
 
 log = logging.getLogger(__name__)
 
-_WINDOW_DAYS = 14
-_WEEKDAY_LABELS = ("一", "二", "三", "四", "五", "六", "日")  # date.weekday(): 週一=0
+WINDOW_DAYS = 14
+WEEKDAY_LABELS = ("一", "二", "三", "四", "五", "六", "日")  # date.weekday(): 週一=0
 _MINUTE_OPTIONS = (0, 15, 30, 45)
 
 # 持續時間選項：value 用 "none" 代表「不設定」，而非空字串 —— 空字串當
@@ -58,7 +58,14 @@ _DURATION_LABELS: dict[int | None, str] = dict(
 )
 
 
-def _resolve_tz(tz_name: str) -> ZoneInfo:
+# resolve_tz／DateSelect／HourSelect／MinuteSelect 沒有底線前綴：
+# views_poll_timeslot.TimeSlotPickerView（排程投票的候選時段挑選器）也用得到
+# 同一套日期/小時/分鐘下拉選單，兩個呼叫端出現後就從私有實作升級成模組內
+# 共用元件（介面本身只需要 picker 提供 selected_date/selected_hour/
+# selected_minute/window_start/rerender()，沒有任何 DateTimePickerView
+# 專屬邏輯）。_DurationSelect 維持私有——持續時間是活動專屬概念，投票候選
+# 時段不需要。
+def resolve_tz(tz_name: str) -> ZoneInfo:
     try:
         return ZoneInfo(tz_name)
     except ZoneInfoNotFoundError:
@@ -68,7 +75,7 @@ def _resolve_tz(tz_name: str) -> ZoneInfo:
         return ZoneInfo("Asia/Taipei")
 
 
-class _DateSelect(discord.ui.Select):
+class DateSelect(discord.ui.Select):
     """14 天捲動視窗的日期下拉選單。"""
 
     def __init__(self, picker: DateTimePickerView) -> None:
@@ -82,13 +89,13 @@ class _DateSelect(discord.ui.Select):
                 value=d.isoformat(),
                 default=(d == self.picker.selected_date),
             )
-            for i in range(_WINDOW_DAYS)
+            for i in range(WINDOW_DAYS)
             for d in (self.picker.window_start + timedelta(days=i),)
         ]
 
     @staticmethod
     def _label(d: date) -> str:
-        return f"{d.month}/{d.day}（{_WEEKDAY_LABELS[d.weekday()]}）"
+        return f"{d.month}/{d.day}（{WEEKDAY_LABELS[d.weekday()]}）"
 
     def refresh(self) -> None:
         self.options = self._build_options()
@@ -99,7 +106,7 @@ class _DateSelect(discord.ui.Select):
         await self.picker.rerender(interaction)
 
 
-class _HourSelect(discord.ui.Select):
+class HourSelect(discord.ui.Select):
     def __init__(self, picker: DateTimePickerView) -> None:
         self.picker = picker
         options = [
@@ -117,7 +124,7 @@ class _HourSelect(discord.ui.Select):
         await self.picker.rerender(interaction)
 
 
-class _MinuteSelect(discord.ui.Select):
+class MinuteSelect(discord.ui.Select):
     def __init__(self, picker: DateTimePickerView) -> None:
         self.picker = picker
         options = [
@@ -176,7 +183,7 @@ class DateTimePickerView(discord.ui.View):
         self.event_id = event_id
         self.message: discord.Message | None = None
 
-        self.tz = _resolve_tz(pending.tz)
+        self.tz = resolve_tz(pending.tz)
         today = datetime.now(self.tz).date()
         self.window_start = today
         self.selected_date: date | None = None
@@ -186,13 +193,13 @@ class DateTimePickerView(discord.ui.View):
         # 當作挑選器的初始選擇，使用者不動它也會被保留。
         self.selected_duration_minutes: int | None = pending.duration_minutes
 
-        self.date_select = _DateSelect(self)
+        self.date_select = DateSelect(self)
         self.add_item(self.date_select)
 
-        self.hour_select = _HourSelect(self)
+        self.hour_select = HourSelect(self)
         self.add_item(self.hour_select)
 
-        self.minute_select = _MinuteSelect(self)
+        self.minute_select = MinuteSelect(self)
         self.add_item(self.minute_select)
 
         self.duration_select = _DurationSelect(self)
@@ -225,7 +232,7 @@ class DateTimePickerView(discord.ui.View):
     def build_embed(self) -> discord.Embed:
         date_text = (
             f"{self.selected_date.month}/{self.selected_date.day}"
-            f"（{_WEEKDAY_LABELS[self.selected_date.weekday()]}）"
+            f"（{WEEKDAY_LABELS[self.selected_date.weekday()]}）"
             if self.selected_date
             else "（尚未選擇）"
         )
@@ -261,12 +268,12 @@ class DateTimePickerView(discord.ui.View):
 
     async def _on_prev(self, interaction: discord.Interaction) -> None:
         today = datetime.now(self.tz).date()
-        self.window_start = max(today, self.window_start - timedelta(days=_WINDOW_DAYS))
+        self.window_start = max(today, self.window_start - timedelta(days=WINDOW_DAYS))
         self.date_select.refresh()
         await self.rerender(interaction)
 
     async def _on_next(self, interaction: discord.Interaction) -> None:
-        self.window_start = self.window_start + timedelta(days=_WINDOW_DAYS)
+        self.window_start = self.window_start + timedelta(days=WINDOW_DAYS)
         self.date_select.refresh()
         await self.rerender(interaction)
 

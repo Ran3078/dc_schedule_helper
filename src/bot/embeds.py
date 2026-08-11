@@ -183,10 +183,21 @@ def build_poll_embed(poll: Row, options: list[Row], votes: list[Row]) -> discord
         colour=discord.Colour.dark_grey() if closed else discord.Colour.blurple(),
     )
 
+    if poll.get("description"):
+        embed.add_field(name="📝 說明", value=poll["description"], inline=False)
+
     tally = build_tally(options, votes)
     for option in options:
         voter_ids = tally.get(option["id"], [])
-        name = f"{option['label']}（{len(voter_ids)} 票）"
+        # kind='time_slot' 的 option['label'] 是純文字（例如 "8/3（一）04:00"）
+        # ——那是給投票下拉選單用的，Select 選項文字不會解析 Discord 時間戳
+        # markup。embed 欄位名稱會解析，所以這裡從 meta（epoch 字串）現算一次
+        # 好看的動態時間戳，兩處各自用最適合的格式。
+        if poll["kind"] == "time_slot" and option.get("meta"):
+            label_text = discord_timestamp(int(option["meta"]), "F")
+        else:
+            label_text = option["label"]
+        name = f"{label_text}（{len(voter_ids)} 票）"
         value = "🔒 匿名投票，僅顯示票數" if poll["anonymous"] else _format_user_mentions(voter_ids)
         embed.add_field(name=name, value=value, inline=False)
 

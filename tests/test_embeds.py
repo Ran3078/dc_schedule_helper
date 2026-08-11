@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from src.bot.embeds import build_event_embed, build_event_list_embed, build_reminder_embed
+from src.bot.embeds import (
+    build_event_embed,
+    build_event_list_embed,
+    build_poll_embed,
+    build_reminder_embed,
+)
 from src.domain.rsvp import RsvpSummary
 
 BASE_EVENT = {
@@ -234,3 +239,67 @@ class TestBuildReminderEmbed:
         )
         assert "https://discord.com/channels/g1/c1/m1" in embed.description
         assert "查看活動公告" in embed.description
+
+
+BASE_POLL = {
+    "id": "poll000001",
+    "question": "晚餐吃什麼",
+    "kind": "generic",
+    "multi": 0,
+    "anonymous": 0,
+    "allow_change": 1,
+    "closes_at": None,
+    "status": "open",
+    "description": None,
+}
+
+
+def _poll(**overrides):
+    return {**BASE_POLL, **overrides}
+
+
+class TestBuildPollEmbed:
+    def test_generic_option_shows_label_as_is(self) -> None:
+        options = [{"id": "o1", "label": "火鍋", "meta": None}]
+        embed = build_poll_embed(_poll(), options, [])
+        assert any(f.name.startswith("火鍋") for f in embed.fields)
+
+    def test_time_slot_option_renders_discord_timestamp_from_meta_not_raw_label(self) -> None:
+        """回歸測試：option['label'] 是給 Select 選單用的純文字（例如
+        "8/3（一）04:00"），embed 欄位名稱要從 meta 現算 Discord 時間戳，不能
+        直接沿用那個純文字 label——否則 embed 少了「依檢視者時區自動換算」
+        的效果（雖然不像 Select 選項那樣整串原始字元跑出來，但仍然是退步）。
+        """
+        options = [{"id": "o1", "label": "8/3（一）04:00", "meta": "1785700800000"}]
+        embed = build_poll_embed(_poll(kind="time_slot"), options, [])
+        field_names = [f.name for f in embed.fields]
+        assert any("<t:1785700800:F>" in name for name in field_names)
+        assert not any(name.startswith("8/3（一）04:00") for name in field_names)
+
+    def test_time_slot_option_without_meta_falls_back_to_label(self) -> None:
+        """理論上不會發生（time_slot 選項一定有 meta），但防禦性地確保不會
+        因為缺 meta 就整個 embed 組不出來。"""
+        options = [{"id": "o1", "label": "沒有 meta", "meta": None}]
+        embed = build_poll_embed(_poll(kind="time_slot"), options, [])
+        assert any(f.name.startswith("沒有 meta") for f in embed.fields)
+
+    def test_omits_description_field_when_not_set(self) -> None:
+        embed = build_poll_embed(_poll(description=None), [], [])
+        assert not any(f.name == "📝 說明" for f in embed.fields)
+
+    def test_includes_description_field_when_set(self) -> None:
+        embed = build_poll_embed(_poll(description="這次要約平日還是假日晚上"), [], [])
+        field = next(f for f in embed.fields if f.name == "📝 說明")
+        assert field.value == "這次要約平日還是假日晚上"
+
+    def test_anonymous_hides_voter_mentions(self) -> None:
+        options = [{"id": "o1", "label": "A", "meta": None}]
+        votes = [{"option_id": "o1", "user_id": "111"}]
+        embed = build_poll_embed(_poll(anonymous=1), options, votes)
+        field = next(f for f in embed.fields if f.name.startswith("A"))
+        assert "111" not in field.value
+        assert "匿名" in field.value
+
+    def test_closed_poll_shows_marker_in_title(self) -> None:
+        embed = build_poll_embed(_poll(status="closed"), [], [])
+        assert "已截止" in embed.title

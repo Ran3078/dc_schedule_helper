@@ -379,6 +379,7 @@ async def create_poll(
     anonymous: bool = False,
     allow_change: bool = True,
     closes_at: int | None = None,
+    description: str | None = None,
 ) -> None:
     """建立投票，並在**同一次 commit** 內一併寫入所有選項。
 
@@ -401,6 +402,7 @@ async def create_poll(
         int(anonymous),
         int(allow_change),
         closes_at,
+        description,
         now,
     )
     option_params = [
@@ -411,8 +413,8 @@ async def create_poll(
         conn.execute(
             "INSERT INTO polls "
             "(id, guild_id, channel_id, creator_id, question, kind, multi, "
-            "max_choices, anonymous, allow_change, closes_at, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "max_choices, anonymous, allow_change, closes_at, description, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             poll_params,
         )
         for params in option_params:

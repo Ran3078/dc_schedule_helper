@@ -1,10 +1,8 @@
 """`/poll` 指令群組：建立、關閉、查看投票結果。
 
 `create` 只收 question／multi／anonymous／allow_change／closes／kind 這些
-單行或布林/選項類的指令參數，選項本身（可能好幾行）改用 Modal 收——比照
-`/event create` 用 Modal 收活動內容的理由：Discord 的單行指令參數輸入框不適合
-打好幾個選項（尤其是排程投票要打好幾個候選時間），詳見
-`modals_poll.PollOptionsModal` 開頭的說明。
+單行或布林/選項類的指令參數，說明文字與選項（可能好幾行，或排程投票的候選
+時段）改用 Modal／挑選器收——詳見 `modals_poll.PollDetailsModal` 開頭的說明。
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from discord.ext import commands
 
 from src.bot.cogs._shared import guild_tz
 from src.bot.embeds import Row, build_event_embed, build_poll_embed
-from src.bot.modals_poll import PollOptionsModal
+from src.bot.modals_poll import PollDetailsModal
 from src.bot.views_poll import build_poll_vote_view
 from src.bot.views_rsvp import build_rsvp_view
 from src.db import repo
@@ -115,7 +113,7 @@ class Polls(commands.GroupCog, group_name="poll", group_description="投票"):
         # Modal 必須是這個 interaction 的第一個回應，不能先 defer——所有不需要
         # 選項內容就能做的驗證（問題文字、closes 時間格式）都得在這之前做完。
         await interaction.response.send_modal(
-            PollOptionsModal(
+            PollDetailsModal(
                 question=question,
                 multi=multi,
                 anonymous=anonymous,
