@@ -14,6 +14,7 @@ from collections.abc import Sequence
 
 import discord
 
+from src.bot import native_events
 from src.bot.embeds import build_event_embed
 from src.bot.modals import PendingEvent
 from src.bot.views_rsvp import build_rsvp_view
@@ -142,6 +143,16 @@ class ConfirmEventView(discord.ui.View):
                 )
             except discord.HTTPException:
                 log.exception("活動 %s 已建立，但發布公告訊息失敗", self.event_id)
+
+        # 同步到 Discord 原生「活動」分頁（M6），換取免費的手機推播。這是
+        # 附加功能，同步失敗只記 log，不影響上面公告發布成功/失敗的文案——
+        # 使用者不該因為這個額外同步出包就以為活動本身建立失敗了。
+        if interaction.guild is not None and (
+            not guild_settings or guild_settings["sync_native_events"]
+        ):
+            discord_event_id = await native_events.sync_create(interaction.guild, event_row)
+            if discord_event_id is not None:
+                await repo.set_event_discord_id(self.event_id, pending.guild_id, discord_event_id)
 
         if message is not None:
             await repo.set_event_message(self.event_id, pending.guild_id, message.id)

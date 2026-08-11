@@ -20,6 +20,7 @@ INITIAL_COGS: tuple[str, ...] = (
     "src.bot.cogs.events",
     "src.bot.cogs.polls",
     "src.bot.cogs.scheduler",
+    "src.bot.cogs.native_events",
 )
 
 

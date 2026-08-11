@@ -276,6 +276,75 @@ class TestListEventsMine:
             await repo.list_events(GUILD_A, scope="mine")
 
 
+class TestSetEventDiscordId:
+    async def test_records_discord_event_id(self, db) -> None:
+        event_id = await _create(db)
+        ok = await repo.set_event_discord_id(event_id, GUILD_A, 888888)
+        assert ok is True
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["discord_event_id"] == "888888"
+
+    async def test_refuses_cross_guild_update(self, db) -> None:
+        event_id = await _create(db, guild_id=GUILD_A)
+        ok = await repo.set_event_discord_id(event_id, GUILD_B, 888888)
+        assert ok is False
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["discord_event_id"] is None
+
+
+class TestGetEventByDiscordId:
+    async def test_finds_event_by_discord_id(self, db) -> None:
+        event_id = await _create(db, guild_id=GUILD_A)
+        await repo.set_event_discord_id(event_id, GUILD_A, 888888)
+
+        row = await repo.get_event_by_discord_id(888888, GUILD_A)
+        assert row is not None
+        assert row["id"] == event_id
+
+    async def test_scoped_to_guild(self, db) -> None:
+        event_id = await _create(db, guild_id=GUILD_A)
+        await repo.set_event_discord_id(event_id, GUILD_A, 888888)
+
+        assert await repo.get_event_by_discord_id(888888, GUILD_B) is None
+
+    async def test_returns_none_when_unknown(self, db) -> None:
+        assert await repo.get_event_by_discord_id(999999999, GUILD_A) is None
+
+
+class TestDeleteRsvp:
+    async def test_deletes_existing_row(self, db) -> None:
+        event_id = await _create(db)
+        await repo.upsert_rsvp(event_id, GUILD_A, USER_1, "yes")
+
+        await repo.delete_rsvp(event_id, GUILD_A, USER_1)
+
+        assert await repo.list_rsvps(event_id, GUILD_A) == []
+
+    async def test_does_not_affect_other_users(self, db) -> None:
+        event_id = await _create(db)
+        await repo.upsert_rsvp(event_id, GUILD_A, USER_1, "yes")
+        await repo.upsert_rsvp(event_id, GUILD_A, USER_2, "no")
+
+        await repo.delete_rsvp(event_id, GUILD_A, USER_1)
+
+        rows = await repo.list_rsvps(event_id, GUILD_A)
+        assert {r["user_id"] for r in rows} == {USER_2}
+
+    async def test_deleting_nonexistent_row_does_not_raise(self, db) -> None:
+        event_id = await _create(db)
+        await repo.delete_rsvp(event_id, GUILD_A, USER_1)  # 不應拋例外
+
+    async def test_scoped_to_guild(self, db) -> None:
+        """guild_id 對不上就不該刪到別的伺服器的 RSVP。"""
+        event_id = await _create(db, guild_id=GUILD_A)
+        await repo.upsert_rsvp(event_id, GUILD_A, USER_1, "yes")
+
+        await repo.delete_rsvp(event_id, GUILD_B, USER_1)
+
+        rows = await repo.list_rsvps(event_id, GUILD_A)
+        assert len(rows) == 1
+
+
 class TestListEventsAll:
     async def test_includes_cancelled_and_past(self, db) -> None:
         past_id = await _create(db, title="過去", starts_at_utc=NOW - HOUR)

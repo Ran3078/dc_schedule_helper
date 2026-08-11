@@ -239,6 +239,22 @@ async def list_rsvps(event_id: str, guild_id: int | str) -> list[Row]:
     )
 
 
+async def delete_rsvp(event_id: str, guild_id: int | str, user_id: int | str) -> None:
+    """刪掉某人的出席回覆，還原成「未回覆」（M6：原生活動卡片點「取消有興趣」
+    時用——取消有興趣的訊號強度跟明確按「不參加」不一樣，不該覆寫成 status='no'，
+    直接刪掉這一列讓它回到沒有紀錄的狀態）。
+
+    多伺服器邊界檢查比照 upsert_rsvp 的 WHERE EXISTS 寫法，只是換成 DELETE。
+    列不存在（本來就沒回覆過，或 event_id/guild_id 對不上）時單純刪 0 列，
+    不當成錯誤。
+    """
+    await engine.execute(
+        "DELETE FROM rsvps WHERE event_id = ? AND user_id = ? "
+        "AND EXISTS (SELECT 1 FROM events WHERE id = ? AND guild_id = ?)",
+        (event_id, str(user_id), event_id, str(guild_id)),
+    )
+
+
 async def set_event_message(event_id: str, guild_id: int | str, message_id: int | str) -> bool:
     """記錄公告訊息 ID，供日後編輯訊息（M3 起的 RSVP 即時更新需要）。
 
@@ -250,6 +266,31 @@ async def set_event_message(event_id: str, guild_id: int | str, message_id: int 
         (str(message_id), now_ms(), event_id, str(guild_id)),
     )
     return rowcount > 0
+
+
+async def set_event_discord_id(
+    event_id: str, guild_id: int | str, discord_event_id: int | str
+) -> bool:
+    """記錄同步出去的原生 Scheduled Event ID（M6），供日後反查
+    （`get_event_by_discord_id`）與取消同步（M7 的 `/event cancel`）用。"""
+    rowcount = await engine.execute(
+        "UPDATE events SET discord_event_id = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
+        (str(discord_event_id), now_ms(), event_id, str(guild_id)),
+    )
+    return rowcount > 0
+
+
+async def get_event_by_discord_id(discord_event_id: int | str, guild_id: int | str) -> Row | None:
+    """依原生 Scheduled Event ID 反查我們的活動列。
+
+    原生活動卡片的「有興趣／取消有興趣」互動事件（`on_scheduled_event_user_add`
+    / `_remove`）只給得到 Discord 那邊的 event id，需要這個反查才能知道是
+    我們哪一場活動、進而更新對應的 RSVP。
+    """
+    return await engine.query_one(
+        "SELECT * FROM events WHERE discord_event_id = ? AND guild_id = ?",
+        (str(discord_event_id), str(guild_id)),
+    )
 
 
 async def list_events(
