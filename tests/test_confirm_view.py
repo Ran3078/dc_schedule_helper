@@ -193,6 +193,41 @@ class TestConfirm:
 
         assert all(child.disabled for child in view.children)
 
+    async def test_confirm_defers_before_doing_any_work(self, db) -> None:
+        """實測踩過的坑：整條路徑要跑好幾次 DB 往返＋兩次 Discord API 呼叫
+        （發公告、同步原生活動），bot 剛啟動、Turso 連線還沒暖機時很容易
+        超過 Discord 對 interaction 的 3 秒初次回應期限，逾期後
+        interaction token 直接失效（`404 Unknown interaction`），不是能
+        重試的那種錯誤——一開始就 defer 才是正解。"""
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        interaction.response.defer.assert_awaited_once()
+
+    async def test_confirm_falls_back_to_message_edit_when_interaction_expired(
+        self, db
+    ) -> None:
+        """就算 defer 沒能挽救（interaction token 已經失效），最後回報
+        結果的那一步也不該把整個確認流程炸掉——改用訊息本身編輯（bot
+        token，不受 interaction token 有效期限制）。"""
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=new_id(), pending=pending, description=None)
+        interaction = _make_interaction()
+        interaction.response.edit_message = AsyncMock(
+            side_effect=discord.NotFound(MagicMock(status=404), "Unknown interaction")
+        )
+        final_message = AsyncMock()
+        view.message = final_message
+
+        await view._confirm_impl(interaction)  # 不應拋例外
+
+        final_message.edit.assert_awaited_once()
+        _, kwargs = final_message.edit.call_args
+        assert "已發布" in kwargs["content"]
+
 
 class TestConfirmWithInvitees:
     """user_ids/role_ids/tag_everyone 是 InviteePickerView 交接過來的邀請對象。

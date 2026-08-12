@@ -94,8 +94,19 @@ class ConfirmEventView(discord.ui.View):
         self.stop()
 
         if interaction is not None and not interaction.response.is_done():
-            await interaction.response.edit_message(content=content, embed=None, view=self)
-        elif self.message is not None:
+            try:
+                await interaction.response.edit_message(content=content, embed=None, view=self)
+                return
+            except discord.HTTPException:
+                # `is_done()` 只代表「我們還沒呼叫過 interaction.response」，
+                # 不代表 interaction token 還沒過期——`_confirm_impl` 那條路徑
+                # 已經先 defer 過，理論上不會走到這裡；這裡是留給沒有 defer
+                # 的呼叫端（例如 `_cancel_impl`）萬一剛好卡超過 3 秒的備援，
+                # 直接改用 self.message.edit()（bot token，不受 interaction
+                # token 有效期限制）。
+                log.warning("interaction 回應失敗（可能已逾期），改用訊息本身編輯", exc_info=True)
+
+        if self.message is not None:
             try:
                 await self.message.edit(content=content, embed=None, view=self)
             except discord.HTTPException:
@@ -112,6 +123,21 @@ class ConfirmEventView(discord.ui.View):
 
     async def _confirm_impl(self, interaction: discord.Interaction) -> None:
         pending = self.pending
+
+        # 這條路徑要走好幾次 DB 往返（建活動＋M8 職位設定要再多 2～3 次）加上
+        # 兩次 Discord API 呼叫（發公告訊息、同步原生活動），實測在 bot 剛
+        # 啟動、Turso 連線還沒暖機時很容易超過 Discord 對 interaction 的
+        # 3 秒初次回應期限——一旦超過，interaction token 直接失效
+        # （`404 Unknown interaction`），不是「回應變慢」那種能重試的錯誤。
+        # 一開始就 defer（元件互動預設是 deferred_message_update，畫面不會
+        # 有任何「思考中」提示），把「必須 3 秒內回應」這個限制解決掉；
+        # 之後 `_finish` 看到 `interaction.response.is_done()` 是 True，
+        # 會改用 `self.message.edit(...)`——那是用 bot token 直接編輯訊息，
+        # 不受 interaction token 有效期限制。
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            log.warning("確認發布時 defer 失敗，稍後改用訊息本身編輯", exc_info=True)
 
         # 預設提醒（1天/1小時/10分前，可由 /settings 調整）在活動建立當下
         # 就一併排定，而不是等使用者另外操作 —— 這是 M4 的核心承諾：建活動
