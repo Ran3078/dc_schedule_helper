@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.bot.views_poll import PollVoteSelect
-from src.bot.views_rsvp import RsvpButton
+from src.bot.views_rsvp import PositionSelect, RsvpButton
 from src.config import Settings
 from src.db import repo
 
@@ -22,6 +22,7 @@ INITIAL_COGS: tuple[str, ...] = (
     "src.bot.cogs.scheduler",
     "src.bot.cogs.native_events",
     "src.bot.cogs.settings",  # 同一個模組裡 Settings／Timezone 兩個 cog 都在
+    "src.bot.cogs.ff14",  # /ff14_recruit（M8）
 )
 
 
@@ -60,12 +61,12 @@ class ScheduleBot(commands.Bot):
             await self.load_extension(cog)
             log.info("已載入 cog: %s", cog)
 
-        # 持久化元件在此註冊。RsvpButton／PollVoteSelect 都用 DynamicItem
-        # （custom_id 帶 event_id/poll_id，每則公告訊息都不同），走
-        # add_dynamic_items 而非 add_view —— 不需要在啟動時逐一重新綁定每則
-        # 舊訊息，Discord 每次互動都會把訊息當下的元件結構送回來，靠 regex
-        # 樣板比對即時重建。
-        self.add_dynamic_items(RsvpButton, PollVoteSelect)
+        # 持久化元件在此註冊。RsvpButton／PollVoteSelect／PositionSelect
+        # （M8）都用 DynamicItem（custom_id 帶 event_id/poll_id，每則公告
+        # 訊息都不同），走 add_dynamic_items 而非 add_view —— 不需要在啟動時
+        # 逐一重新綁定每則舊訊息，Discord 每次互動都會把訊息當下的元件結構
+        # 送回來，靠 regex 樣板比對即時重建。
+        self.add_dynamic_items(RsvpButton, PollVoteSelect, PositionSelect)
 
         # 見 _on_app_command_error 的說明：沒有這個，指令處理中任何沒被接住的
         # 例外（最常見是 DB 連線瞬斷）對使用者來說就是「該申請未回應」，

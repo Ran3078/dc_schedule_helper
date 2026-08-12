@@ -174,6 +174,80 @@ class TestRsvpFields:
         assert "…等" in yes_field.value
 
 
+class TestPositionFields:
+    """M8：職位報名欄位。"""
+
+    def _slot(self, **overrides):
+        return {"id": "slot1", "event_id": "evt0000001", "position": "D1", "sort": 0, **overrides}
+
+    def test_no_fields_when_role_slots_not_given(self) -> None:
+        """既有活動（沒設定位置）不受這個功能影響——這是最重要的回歸測試。"""
+        embed = build_event_embed(_event())
+        assert not any("MT" in f.name or "D1" in f.name for f in embed.fields)
+
+    def test_no_fields_when_role_slots_empty(self) -> None:
+        embed = build_event_embed(_event(), role_slots=[], role_signups=[])
+        assert not any("D1" in f.name for f in embed.fields)
+
+    def test_shows_position_with_no_signups(self) -> None:
+        embed = build_event_embed(_event(), role_slots=[self._slot()], role_signups=[])
+        field = next(f for f in embed.fields if "D1" in f.name)
+        assert "（0/1）" in field.name
+        assert "尚無人選" in field.value
+
+    def test_shows_confirmed_signup_with_job(self) -> None:
+        signups = [{"role_slot_id": "slot1", "user_id": "111", "job": "武士", "waitlisted": 0}]
+        embed = build_event_embed(_event(), role_slots=[self._slot()], role_signups=signups)
+        field = next(f for f in embed.fields if "D1" in f.name)
+        assert "（1/1）" in field.name
+        assert "<@111>" in field.value
+        assert "武士" in field.value
+
+    def test_shows_waitlist_alongside_confirmed(self) -> None:
+        signups = [
+            {
+                "role_slot_id": "slot1",
+                "user_id": "111",
+                "job": "武士",
+                "waitlisted": 0,
+                "signed_up_at": 1,
+            },
+            {
+                "role_slot_id": "slot1",
+                "user_id": "222",
+                "job": "忍者",
+                "waitlisted": 1,
+                "signed_up_at": 2,
+            },
+        ]
+        embed = build_event_embed(_event(), role_slots=[self._slot()], role_signups=signups)
+        field = next(f for f in embed.fields if "D1" in f.name)
+        assert "（1/1）" in field.name
+        assert "<@111>" in field.value
+        assert "候補" in field.value
+        assert "<@222>" in field.value
+
+    def test_multiple_slots_each_get_their_own_field(self) -> None:
+        slots = [
+            self._slot(id="s1", position="MT", sort=0),
+            self._slot(id="s2", position="D1", sort=1),
+        ]
+        embed = build_event_embed(_event(), role_slots=slots, role_signups=[])
+        names = [f.name for f in embed.fields]
+        assert any("MT" in n for n in names)
+        assert any("D1" in n for n in names)
+
+    def test_role_fields_appear_before_invitees_field(self) -> None:
+        invitees = [{"target_type": "user", "target_id": "999"}]
+        embed = build_event_embed(
+            _event(), invitees=invitees, role_slots=[self._slot()], role_signups=[]
+        )
+        names = [f.name for f in embed.fields]
+        role_index = next(i for i, n in enumerate(names) if "D1" in n)
+        invitee_index = next(i for i, n in enumerate(names) if "邀請對象" in n)
+        assert role_index < invitee_index
+
+
 class TestBuildEventListEmbed:
     def test_empty_list_shows_placeholder_message(self) -> None:
         embed = build_event_list_embed([], title="測試")

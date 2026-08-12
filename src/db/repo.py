@@ -418,6 +418,216 @@ async def update_event(
     return rowcount > 0
 
 
+# ── 職位報名（FF14，M8）───────────────────────────────────────────────────
+#
+# 八個固定位置代碼、名額固定 1 人，見 domain/roles.py 開頭說明。
+# event_role_signups 的 PK 是 (event_id, user_id)：一人一場活動只能選一個
+# 位置，換位置是「刪掉舊列、重算新位置的人數、插入新列」，不是就地 UPDATE
+# ——這樣「換到自己原本已經佔滿的同一個位置」這種邊界情況也會被正確重算
+# （見 set_role_signup 的說明）。
+
+
+async def set_event_role_slots(
+    event_id: str, guild_id: int | str, positions: Sequence[str]
+) -> bool:
+    """`/event roles` 用：整批覆寫這場活動要開哪些位置。
+
+    位置代碼不變的沿用原本的 `id`（保留該位置既有的報名），這次清單裡
+    消失的位置連同 `event_role_signups` 一起刪掉（原本選那個位置的人
+    位置選擇被清空，之後要重選）。`positions` 預期已經是
+    `domain.roles.parse_positions` 排過序的結果，`sort` 直接照清單順序
+    寫入。`positions=[]` 清空整場活動的位置設定。回傳 False 代表活動
+    不存在/不屬於這個伺服器。
+    """
+    guild_id_s = str(guild_id)
+
+    def _tx(conn: Any) -> bool:
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE id = ? AND guild_id = ?", (event_id, guild_id_s)
+        ).fetchone()
+        if exists is None:
+            return False
+
+        existing = conn.execute(
+            "SELECT id, position FROM event_role_slots WHERE event_id = ?", (event_id,)
+        ).fetchall()
+        existing_by_position = {row[1]: row[0] for row in existing}
+
+        keep = set(positions)
+        for position, slot_id in existing_by_position.items():
+            if position not in keep:
+                conn.execute(
+                    "DELETE FROM event_role_signups WHERE role_slot_id = ?", (slot_id,)
+                )
+                conn.execute("DELETE FROM event_role_slots WHERE id = ?", (slot_id,))
+
+        for sort, position in enumerate(positions):
+            if position in existing_by_position:
+                # 位置不變，只是這次輸入的順序可能不同——重寫 sort，確保
+                # 下次查詢的欄位順序跟這次設定一致。
+                conn.execute(
+                    "UPDATE event_role_slots SET sort = ? WHERE id = ?",
+                    (sort, existing_by_position[position]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO event_role_slots (id, event_id, position, sort) "
+                    "VALUES (?,?,?,?)",
+                    (new_id(), event_id, position, sort),
+                )
+        conn.commit()
+        return True
+
+    return await engine.run(_tx)
+
+
+async def list_event_role_slots(event_id: str, guild_id: int | str) -> list[Row]:
+    """依 sort 排序。JOIN events 界定 guild_id，理由同 list_event_invitees。"""
+    return await engine.query_all(
+        "SELECT s.* FROM event_role_slots s JOIN events e ON e.id = s.event_id "
+        "WHERE s.event_id = ? AND e.guild_id = ? ORDER BY s.sort",
+        (event_id, str(guild_id)),
+    )
+
+
+async def list_event_role_signups(event_id: str, guild_id: int | str) -> list[Row]:
+    """同上，JOIN events 界定 guild_id。"""
+    return await engine.query_all(
+        "SELECT rs.* FROM event_role_signups rs JOIN events e ON e.id = rs.event_id "
+        "WHERE rs.event_id = ? AND e.guild_id = ?",
+        (event_id, str(guild_id)),
+    )
+
+
+async def get_rsvp_status(event_id: str, guild_id: int | str, user_id: int | str) -> str | None:
+    """`PositionSelect` 用來檢查「有沒有先按參加」——位置選擇疊加在 RSVP
+    之上，只有 status='yes' 的人才能選位置。"""
+    row = await engine.query_one(
+        "SELECT r.status FROM rsvps r JOIN events e ON e.id = r.event_id "
+        "WHERE r.event_id = ? AND r.user_id = ? AND e.guild_id = ?",
+        (event_id, str(user_id), str(guild_id)),
+    )
+    return row["status"] if row else None
+
+
+async def set_role_signup(
+    event_id: str, guild_id: int | str, user_id: int | str, role_slot_id: str, job: str
+) -> Row | None:
+    """選定/換一個位置。
+
+    先刪掉使用者在這場活動原本的位置選擇（若有），再依刪除後的最新人數
+    決定這次是確定名額還是候補——這個順序保證「換到自己原本已經佔滿的
+    同一個位置」（例如同一位置換職業）也會被正確重算成確定名額，不會誤判
+    成「已經有一個確定名額（其實是自己）所以這次進候補」。呼叫端拿到回傳
+    值後，若這次是換位置（不是第一次選），要自行對**舊**的 role_slot_id
+    跑 `promote_next_waitlisted`。
+
+    活動或 `role_slot_id` 不存在（或不屬於這個伺服器）回傳 `None`。
+    """
+    guild_id_s = str(guild_id)
+    user_id_s = str(user_id)
+    now = now_ms()
+
+    def _tx(conn: Any) -> Row | None:
+        slot = conn.execute(
+            "SELECT s.id FROM event_role_slots s JOIN events e ON e.id = s.event_id "
+            "WHERE s.id = ? AND s.event_id = ? AND e.guild_id = ?",
+            (role_slot_id, event_id, guild_id_s),
+        ).fetchone()
+        if slot is None:
+            return None
+
+        conn.execute(
+            "DELETE FROM event_role_signups WHERE event_id = ? AND user_id = ?",
+            (event_id, user_id_s),
+        )
+
+        confirmed_count = conn.execute(
+            "SELECT COUNT(*) FROM event_role_signups "
+            "WHERE role_slot_id = ? AND waitlisted = 0",
+            (role_slot_id,),
+        ).fetchone()[0]
+        waitlisted = 1 if confirmed_count >= 1 else 0
+
+        conn.execute(
+            "INSERT INTO event_role_signups "
+            "(event_id, role_slot_id, user_id, job, waitlisted, signed_up_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (event_id, role_slot_id, user_id_s, job, waitlisted, now),
+        )
+        conn.commit()
+        return {
+            "event_id": event_id,
+            "role_slot_id": role_slot_id,
+            "user_id": user_id_s,
+            "job": job,
+            "waitlisted": waitlisted,
+            "signed_up_at": now,
+        }
+
+    return await engine.run(_tx)
+
+
+async def remove_role_signup(event_id: str, guild_id: int | str, user_id: int | str) -> Row | None:
+    """清空使用者在這場活動的位置選擇（RSVP 改成非「參加」，或使用者自己
+    在選單裡選「取消我的位置」時用）。回傳被刪的列（呼叫端用
+    `waitlisted` 判斷：刪掉的是確定名額才需要對 `role_slot_id` 觸發
+    `promote_next_waitlisted`；刪掉候補列不用）。查不到回傳 `None`。
+    """
+    guild_id_s = str(guild_id)
+    user_id_s = str(user_id)
+
+    def _tx(conn: Any) -> Row | None:
+        row = conn.execute(
+            "SELECT rs.role_slot_id, rs.job, rs.waitlisted FROM event_role_signups rs "
+            "JOIN events e ON e.id = rs.event_id "
+            "WHERE rs.event_id = ? AND rs.user_id = ? AND e.guild_id = ?",
+            (event_id, user_id_s, guild_id_s),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "DELETE FROM event_role_signups WHERE event_id = ? AND user_id = ?",
+            (event_id, user_id_s),
+        )
+        conn.commit()
+        return {"role_slot_id": row[0], "job": row[1], "waitlisted": row[2]}
+
+    return await engine.run(_tx)
+
+
+async def promote_next_waitlisted(role_slot_id: str) -> Row | None:
+    """把該位置候補佇列裡 `signed_up_at` 最早的一位改成確定名額，回傳那
+    一列；沒人候補回傳 `None`。
+
+    不吃 `guild_id`：`role_slot_id` 是內部 nanoid，不是使用者輸入，呼叫端
+    一定是先透過某個有做 guild 範圍檢查的操作（`set_role_signup`／
+    `remove_role_signup`）才拿得到這個 id，這裡不重複檢查。
+    """
+
+    def _tx(conn: Any) -> Row | None:
+        row = conn.execute(
+            "SELECT event_id, user_id, job FROM event_role_signups "
+            "WHERE role_slot_id = ? AND waitlisted = 1 ORDER BY signed_up_at ASC LIMIT 1",
+            (role_slot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE event_role_signups SET waitlisted = 0 WHERE event_id = ? AND user_id = ?",
+            (row[0], row[1]),
+        )
+        conn.commit()
+        return {
+            "event_id": row[0],
+            "user_id": row[1],
+            "job": row[2],
+            "role_slot_id": role_slot_id,
+        }
+
+    return await engine.run(_tx)
+
+
 # ── 提醒排程 ──────────────────────────────────────────────────────────────
 #
 # list_due_reminders() 是本檔案開頭第 5 點寫的唯一例外：系統層級的背景

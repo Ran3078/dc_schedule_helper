@@ -49,12 +49,15 @@ def _make_interaction() -> MagicMock:
     return interaction
 
 
-def _view(*, allow_everyone_ping: bool = False, **pending_overrides) -> InviteePickerView:
+def _view(
+    *, allow_everyone_ping: bool = False, positions: list[str] = (), **pending_overrides
+) -> InviteePickerView:
     return InviteePickerView(
         pending=_make_pending(**pending_overrides),
         description=None,
         event_id="e1",
         allow_everyone_ping=allow_everyone_ping,
+        positions=positions,
     )
 
 
@@ -218,6 +221,17 @@ class TestNext:
 
         _, kwargs = interaction.response.edit_message.call_args
         assert kwargs["view"].tag_everyone is True
+
+    async def test_next_carries_positions(self, db) -> None:
+        """M8：/ff14_recruit 帶的 positions 要原樣轉交給 ConfirmEventView，
+        /event create 沒帶（預設空 tuple）時行為不變。"""
+        view = _view(positions=["MT", "ST"])
+        interaction = _make_interaction()
+
+        await view._on_next(interaction)
+
+        _, kwargs = interaction.response.edit_message.call_args
+        assert kwargs["view"].positions == ["MT", "ST"]
 
     async def test_next_carries_restrict_flag(self, db) -> None:
         view = _view()

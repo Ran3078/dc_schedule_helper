@@ -269,6 +269,8 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         assert event_row is not None  # 剛剛才更新成功
         invitees = await repo.list_event_invitees(self.event_id, self.guild_id)
         rsvps = await repo.list_rsvps(self.event_id, self.guild_id)
+        role_slots = await repo.list_event_role_slots(self.event_id, self.guild_id)
+        role_signups = await repo.list_event_role_signups(self.event_id, self.guild_id)
         summary = (
             build_rsvp_summary(interaction.guild, invitees, rsvps)
             if interaction.guild is not None
@@ -279,6 +281,9 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         # 「編輯已存在的公告訊息」手法，只是這裡沒有現成的 interaction.message
         # 可用（觸發編輯的是 Modal 這個獨立 interaction，不是按在公告訊息上的
         # 元件），改用 interaction.client 找頻道、憑 message_id 抓訊息來編輯。
+        # 沒帶 view=：/event edit 不會動到職位選單本身，只有 embed 需要帶上
+        # role_slots/role_signups（否則已設定過職位的活動會在這次重繪後
+        # 憑空少掉那幾個欄位——embed 是整包替換，不是只補丁）。
         if event_row["message_id"] and event_row["channel_id"]:
             channel = interaction.client.get_channel(int(event_row["channel_id"]))
             if channel is None:
@@ -291,7 +296,11 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
             if channel is not None:
                 try:
                     message = await channel.fetch_message(int(event_row["message_id"]))
-                    await message.edit(embed=build_event_embed(event_row, invitees, summary))
+                    await message.edit(
+                        embed=build_event_embed(
+                            event_row, invitees, summary, role_slots, role_signups
+                        )
+                    )
                 except discord.HTTPException:
                     log.warning("編輯活動 %s 後更新公告訊息失敗", self.event_id, exc_info=True)
 

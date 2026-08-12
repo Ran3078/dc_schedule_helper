@@ -532,3 +532,52 @@ class TestConfirmSchedulesDefaultReminders:
             (view.event_id,),
         )
         assert [r["offset_min"] for r in rows] == [5, 30]
+
+
+class TestPositionsIntegration:
+    """M8：`/ff14_recruit` 帶 `positions` 時，`_confirm_impl` 要一併寫入
+    `event_role_slots` 並在公告 embed/view 帶出來；`positions=()`（現有
+    `/event create` 的預設情況）要完全不受影響——這是最重要的回歸測試。"""
+
+    async def test_positions_empty_by_default_writes_no_role_slots(self, db) -> None:
+        """對照組：/event create 沒有 positions 參數可給，view 建構時就是
+        預設值，行為要跟這個功能加進來之前一致。"""
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(event_id=event_id, pending=pending, description=None)
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        assert await repo.list_event_role_slots(event_id, GUILD_ID) == []
+        _, kwargs = interaction.channel.send.call_args
+        assert len(kwargs["view"].children) == 3  # 只有 RSVP 三顆按鈕，沒有職位選單
+
+    async def test_positions_given_writes_role_slots(self, db) -> None:
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(
+            event_id=event_id, pending=pending, description=None,
+            positions=["MT", "ST", "D1"],
+        )
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        slots = await repo.list_event_role_slots(event_id, GUILD_ID)
+        assert [s["position"] for s in slots] == ["MT", "ST", "D1"]
+
+    async def test_positions_given_includes_role_fields_in_embed_and_view(self, db) -> None:
+        event_id = new_id()
+        pending = _make_pending()
+        view = ConfirmEventView(
+            event_id=event_id, pending=pending, description=None, positions=["MT"],
+        )
+        interaction = _make_interaction()
+
+        await view._confirm_impl(interaction)
+
+        _, kwargs = interaction.channel.send.call_args
+        embed = kwargs["embed"]
+        assert any("MT" in f.name for f in embed.fields)
+        assert len(kwargs["view"].children) == 4  # 3 顆 RSVP 按鈕 + PositionSelect

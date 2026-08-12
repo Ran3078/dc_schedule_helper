@@ -1,4 +1,8 @@
-"""`/event` 指令群組：建立、列出、查看、編輯、取消、邀請、催促。"""
+"""`/event` 指令群組：建立、列出、查看、編輯、取消、邀請、催促。
+
+FF14 團本職位名額改由獨立指令 `/ff14_recruit`（見 `cogs/ff14.py`）在建立
+活動當下一次收，不是這個群組底下的子指令——理由見該檔案開頭的說明。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from src.bot import native_events
 from src.bot.cogs._shared import is_organizer, resolve_user_tz
 from src.bot.embeds import Row, build_event_embed, build_event_list_embed
 from src.bot.modals import EventDescriptionModal, EventEditModal, PendingEvent
-from src.bot.views_rsvp import build_rsvp_view
+from src.bot.views_rsvp import build_event_controls_view
 from src.db import repo
 from src.domain.rsvp import build_rsvp_summary
 from src.lib.ids import new_id
@@ -293,8 +297,14 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
         if interaction.guild is not None:
             rsvps = await repo.list_rsvps(event_id, interaction.guild_id)
             rsvp_summary = build_rsvp_summary(interaction.guild, invitees, rsvps)
+        role_slots = await repo.list_event_role_slots(event_id, interaction.guild_id)
+        role_signups = await repo.list_event_role_signups(event_id, interaction.guild_id)
 
-        await interaction.followup.send(embed=build_event_embed(event, invitees, rsvp_summary))
+        await interaction.followup.send(
+            embed=build_event_embed(
+                event, invitees, rsvp_summary, role_slots, role_signups
+            )
+        )
 
     @app_commands.command(name="edit", description="編輯活動")
     @app_commands.describe(event_id="活動 ID（見 /event list 或公告卡片下方）")
@@ -368,6 +378,8 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
         assert event is not None  # 剛剛才取消成功
         invitees = await repo.list_event_invitees(event_id, interaction.guild_id)
         rsvps = await repo.list_rsvps(event_id, interaction.guild_id)
+        role_slots = await repo.list_event_role_slots(event_id, interaction.guild_id)
+        role_signups = await repo.list_event_role_signups(event_id, interaction.guild_id)
         summary = (
             build_rsvp_summary(interaction.guild, invitees, rsvps)
             if interaction.guild is not None
@@ -384,15 +396,19 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
         if channel is None:
             return
 
-        # 公告卡片重繪成刪除線+已取消，RSVP 按鈕全部 disabled——
-        # RsvpButton.callback 的活動狀態檢查是最後一道防呆，這裡才是使用者
-        # 實際會看到的視覺回饋。
+        # 公告卡片重繪成刪除線+已取消，RSVP 按鈕與職位選單全部 disabled——
+        # RsvpButton／PositionSelect callback 裡的活動狀態檢查是最後一道
+        # 防呆，這裡才是使用者實際會看到的視覺回饋。
         if event["message_id"]:
             try:
                 message = await channel.fetch_message(int(event["message_id"]))
                 await message.edit(
-                    embed=build_event_embed(event, invitees, summary),
-                    view=build_rsvp_view(event_id, disabled=True),
+                    embed=build_event_embed(
+                        event, invitees, summary, role_slots, role_signups
+                    ),
+                    view=build_event_controls_view(
+                        event_id, role_slots, role_signups, disabled=True
+                    ),
                 )
             except discord.HTTPException:
                 log.warning("取消活動 %s 後更新公告訊息失敗", event_id, exc_info=True)
@@ -481,6 +497,8 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
 
         invitees = await repo.list_event_invitees(event_id, interaction.guild_id)
         rsvps = await repo.list_rsvps(event_id, interaction.guild_id)
+        role_slots = await repo.list_event_role_slots(event_id, interaction.guild_id)
+        role_signups = await repo.list_event_role_signups(event_id, interaction.guild_id)
         summary = (
             build_rsvp_summary(interaction.guild, invitees, rsvps)
             if interaction.guild is not None
@@ -496,7 +514,15 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
         if event["message_id"]:
             try:
                 message = await channel.fetch_message(int(event["message_id"]))
-                await message.edit(embed=build_event_embed(event, invitees, summary))
+                # 沒帶 view=：這裡不動任何控制元件，只重繪 embed（見 edit()
+                # 的語意——省略的參數維持原樣，不會把 view 清空）。role_slots/
+                # role_signups 還是要帶，否則已經設定過職位的活動會在這次
+                # 重繪後憑空少掉那幾個欄位（embed 是整包替換，不是只補丁）。
+                await message.edit(
+                    embed=build_event_embed(
+                        event, invitees, summary, role_slots, role_signups
+                    )
+                )
             except discord.HTTPException:
                 log.warning("追加參加對象後更新活動 %s 公告訊息失敗", event_id, exc_info=True)
 

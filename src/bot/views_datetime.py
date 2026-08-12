@@ -25,6 +25,7 @@ discord.py 的選擇，Components V2 也沒有放寬）。這代表「一週 7 �
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -175,12 +176,22 @@ class DateTimePickerView(discord.ui.View):
     """
 
     def __init__(
-        self, *, pending: PendingEvent, description: str | None, event_id: str
+        self,
+        *,
+        pending: PendingEvent,
+        description: str | None,
+        event_id: str,
+        positions: Sequence[str] = (),
     ) -> None:
         super().__init__(timeout=300)  # 5 分鐘沒選完就作廢，避免預覽訊息無限期卡著
         self.pending = pending
         self.description = description
         self.event_id = event_id
+        # M8：只有 /ff14_recruit 那條路徑會帶非空值，/event create 一律是
+        # 空 tuple——單純手把手往下一步（InviteePickerView）轉傳，這個 View
+        # 本身不需要知道職位是什麼，理由同 description/user_ids 那些欄位
+        # 不放進 PendingEvent 本身（見 modals.py 的說明）。
+        self.positions = positions
         self.message: discord.Message | None = None
 
         self.tz = resolve_tz(pending.tz)
@@ -319,6 +330,7 @@ class DateTimePickerView(discord.ui.View):
             description=self.description,
             event_id=self.event_id,
             allow_everyone_ping=allow_everyone,
+            positions=self.positions,
         )
         await interaction.response.edit_message(
             content="請選擇要標記的參加對象（選填，可直接按下一步略過）：",

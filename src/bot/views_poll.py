@@ -112,7 +112,7 @@ def build_poll_vote_view(
     poll_id: str, options: list[Row], *, multi: bool, disabled: bool = False
 ) -> discord.ui.View:
     """建立投票公告要附帶的下拉選單。只在**發布**與 **/poll close** 時呼叫
-    （比照 `views_rsvp.build_rsvp_view` 只在發布時呼叫一次）——之後的持久性
+    （比照 `views_rsvp.build_event_controls_view` 只在發布時呼叫一次）——之後的持久性
     完全靠 `PollVoteSelect` 的 `DynamicItem` 機制，重啟不需要重新附加。
 
     `disabled=True` 給 `/poll close` 用：關閉投票後重繪一個 disabled 版本

@@ -294,6 +294,24 @@ class TestConfirm:
         _, kwargs = interaction.response.edit_message.call_args
         assert kwargs["view"].pending.duration_minutes is None
 
+    async def test_confirm_carries_positions_into_invitee_picker(self, db) -> None:
+        """M8：/ff14_recruit 帶的 positions 要原樣轉交給下一步，/event
+        create 沒帶（預設空 tuple）時行為不變。"""
+        view = DateTimePickerView(
+            pending=_make_pending(), description=None, event_id="e1",
+            positions=["MT", "ST"],
+        )
+        interaction = _make_interaction()
+        _pick(view, day_offset=1, hour=20, minute=0)
+        await view.date_select.callback(interaction)
+        await view.hour_select.callback(interaction)
+        await view.minute_select.callback(interaction)
+
+        await view._on_confirm(interaction)
+
+        _, kwargs = interaction.response.edit_message.call_args
+        assert kwargs["view"].positions == ["MT", "ST"]
+
     async def test_confirm_does_not_write_to_database_yet(self, db) -> None:
         """轉交給 ConfirmEventView 只是換一個預覽畫面，真正寫入要等使用者再按一次發布。"""
         view = DateTimePickerView(pending=_make_pending(), description=None, event_id="e1")

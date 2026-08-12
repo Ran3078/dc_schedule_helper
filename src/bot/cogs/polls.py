@@ -17,7 +17,7 @@ from src.bot.cogs._shared import guild_tz
 from src.bot.embeds import Row, build_event_embed, build_poll_embed
 from src.bot.modals_poll import PollDetailsModal
 from src.bot.views_poll import build_poll_vote_view
-from src.bot.views_rsvp import build_rsvp_view
+from src.bot.views_rsvp import build_event_controls_view
 from src.db import repo
 from src.domain.polls import all_voter_ids, build_tally, pick_winning_time_slot
 from src.domain.reminders import parse_default_reminders
@@ -276,7 +276,8 @@ class Polls(commands.GroupCog, group_name="poll", group_description="投票"):
                 content=build_mention_content(voter_ids, [], tag_everyone=False),
                 embed=build_event_embed(event_row, invitees, rsvp_summary),
                 allowed_mentions=build_allowed_mentions(voter_ids, [], tag_everyone=False),
-                view=build_rsvp_view(event_id),
+                # 投票自動建立的活動不可能已經有職位設定，固定傳空清單。
+                view=build_event_controls_view(event_id, [], []),
             )
         except discord.HTTPException:
             log.exception("依投票 %s 自動建立的活動 %s 發布公告失敗", poll["id"], event_id)

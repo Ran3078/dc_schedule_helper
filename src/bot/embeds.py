@@ -46,6 +46,37 @@ def _format_user_mentions(user_ids: list[int]) -> str:
     return " ".join(kept) + f" …等 {len(mentions) - len(kept)} 人"
 
 
+# 位置代碼的圖示，純視覺區分（見 domain/roles.py 的 POSITIONS）。
+_POSITION_ICONS = {
+    "MT": "🛡️", "ST": "🛡️",
+    "H1": "💚", "H2": "💚",
+    "D1": "⚔️", "D2": "⚔️",
+    "D3": "🏹",
+    "D4": "🔮",
+}
+
+
+def _format_role_slot_field(slot: Row, signups: list[Row]) -> tuple[str, str]:
+    """組單一位置的 embed 欄位 (name, value)。`signups` 是這個位置（同一個
+    `role_slot_id`）的所有報名列，confirmed 理論上最多 1 筆，候補可能多筆
+    ——依 `signed_up_at` 排序讓候補順序在畫面上跟遞補順序一致。
+    """
+    confirmed = [s for s in signups if not s["waitlisted"]]
+    waitlisted = sorted(
+        (s for s in signups if s["waitlisted"]), key=lambda s: s["signed_up_at"]
+    )
+
+    icon = _POSITION_ICONS.get(slot["position"], "🔸")
+    name = f"{icon} {slot['position']}（{len(confirmed)}/1）"
+
+    lines = (
+        [f"<@{s['user_id']}>（{s['job']}）" for s in confirmed] if confirmed else ["（尚無人選）"]
+    )
+    if waitlisted:
+        lines.append("候補：" + " ".join(f"<@{s['user_id']}>（{s['job']}）" for s in waitlisted))
+    return name, "\n".join(lines)
+
+
 def _mention_list(invitees: list[Row]) -> list[str]:
     """把 event_invitees 的列（或 mentions.invitee_rows() 組出的假列）轉成
     mention 字串。純字串格式化，不需要呼叫 Discord API —— 顯示用的 mention
@@ -67,6 +98,8 @@ def build_event_embed(
     event: Row,
     invitees: list[Row] | None = None,
     rsvp_summary: RsvpSummary | None = None,
+    role_slots: list[Row] | None = None,
+    role_signups: list[Row] | None = None,
 ) -> discord.Embed:
     """建立活動公告卡片。
 
@@ -81,6 +114,11 @@ def build_event_embed(
     rsvp_summary 是 domain.rsvp.build_rsvp_summary() 算出來的參加/待定/
     不參加/未回覆分類，只有傳了才會顯示這幾個欄位（`/event list` 這類簡要
     情境不需要，見 build_event_list_embed）。
+
+    role_slots／role_signups 是 M8 職位報名（見 domain/roles.py）：
+    event_role_slots／event_role_signups 的列，只有 role_slots 非空才會
+    顯示位置欄位——沒設定位置的活動兩個參數都留 None，行為跟這個功能加
+    進來之前完全一樣。
     """
     icon, colour = STATUS_LABELS.get(event["status"], ("📅", discord.Colour.blurple()))
     title = event["title"]
@@ -100,6 +138,14 @@ def build_event_embed(
 
     if event["description"]:
         embed.add_field(name="📝 內容", value=event["description"], inline=False)
+
+    if role_slots:
+        by_slot: dict[str, list[Row]] = {}
+        for signup in role_signups or []:
+            by_slot.setdefault(signup["role_slot_id"], []).append(signup)
+        for slot in role_slots:
+            name, value = _format_role_slot_field(slot, by_slot.get(slot["id"], []))
+            embed.add_field(name=name, value=value, inline=False)
 
     if invitees:
         mentions = _mention_list(invitees)

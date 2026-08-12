@@ -15,9 +15,9 @@ from collections.abc import Sequence
 import discord
 
 from src.bot import native_events
-from src.bot.embeds import build_event_embed
+from src.bot.embeds import Row, build_event_embed
 from src.bot.modals import PendingEvent
-from src.bot.views_rsvp import build_rsvp_view
+from src.bot.views_rsvp import build_event_controls_view
 from src.db import repo
 from src.domain.reminders import parse_default_reminders
 from src.domain.rsvp import RsvpSummary, build_rsvp_summary
@@ -38,6 +38,11 @@ class ConfirmEventView(discord.ui.View):
 
     `restrict_rsvp` 同樣從 InviteePickerView 帶過來：True 時 RsvpButton
     只接受落在邀請名單展開後的成員（見 views_rsvp.py），其他人按了會被拒絕。
+
+    `positions` 是 M8（FF14 團本職位報名）的欄位，只有 `/ff14_recruit`
+    那條路徑（`modals_ff14.Ff14RecruitModal` → `DateTimePickerView`／
+    直接 → `InviteePickerView`）會帶非空值；`/event create` 一律是空
+    tuple，行為完全不受影響。
     """
 
     def __init__(
@@ -50,6 +55,7 @@ class ConfirmEventView(discord.ui.View):
         role_ids: Sequence[int] = (),
         tag_everyone: bool = False,
         restrict_rsvp: bool = False,
+        positions: Sequence[str] = (),
     ) -> None:
         super().__init__(timeout=300)  # 5 分鐘沒確認就作廢，避免預覽訊息無限期卡著
         self.event_id = event_id
@@ -59,6 +65,7 @@ class ConfirmEventView(discord.ui.View):
         self.role_ids = list(role_ids)
         self.tag_everyone = tag_everyone
         self.restrict_rsvp = restrict_rsvp
+        self.positions = list(positions)
         self.message: discord.Message | None = None
 
     async def _resolve_channel(
@@ -135,6 +142,15 @@ class ConfirmEventView(discord.ui.View):
         assert event_row is not None, "剛寫入的活動查不到，DB 層有問題"
         invitees = await repo.list_event_invitees(self.event_id, pending.guild_id)
 
+        # M8：FF14 招募（/ff14_recruit）帶了職位設定才需要寫入，/event
+        # create 這條路徑 self.positions 永遠是空清單，兩個查詢也不用跑。
+        role_slots: list[Row] = []
+        role_signups: list[Row] = []
+        if self.positions:
+            await repo.set_event_role_slots(self.event_id, pending.guild_id, self.positions)
+            role_slots = await repo.list_event_role_slots(self.event_id, pending.guild_id)
+            role_signups = await repo.list_event_role_signups(self.event_id, pending.guild_id)
+
         # 剛發布時還沒有任何人回覆（rsvps=[]），但先算一次摘要讓公告一開始
         # 就顯示「✅ 參加（0）」「⏳ 未回覆（N）」，不必等第一次按按鈕才出現。
         # interaction.guild 理論上一定有值（這條路徑全走 guild_only 指令），
@@ -158,11 +174,13 @@ class ConfirmEventView(discord.ui.View):
                     content=build_mention_content(
                         self.user_ids, self.role_ids, tag_everyone=self.tag_everyone
                     ),
-                    embed=build_event_embed(event_row, invitees, rsvp_summary),
+                    embed=build_event_embed(
+                        event_row, invitees, rsvp_summary, role_slots, role_signups
+                    ),
                     allowed_mentions=build_allowed_mentions(
                         self.user_ids, self.role_ids, tag_everyone=self.tag_everyone
                     ),
-                    view=build_rsvp_view(self.event_id),
+                    view=build_event_controls_view(self.event_id, role_slots, role_signups),
                 )
             except discord.HTTPException:
                 log.exception("活動 %s 已建立，但發布公告訊息失敗", self.event_id)

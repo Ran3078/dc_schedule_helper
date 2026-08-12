@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from src.bot.views_rsvp import _TEMPLATE, RSVP_STATUSES, RsvpButton, build_rsvp_view
+from src.bot.views_rsvp import _TEMPLATE, RSVP_STATUSES, RsvpButton, build_event_controls_view
 from src.db import repo
 from src.lib.clock import now_ms
 from src.lib.ids import new_id
@@ -22,6 +22,7 @@ from src.lib.ids import new_id
 GUILD_ID = 111111111111111111
 CHANNEL_ID = 222222222222222222
 USER_ID = 333333333333333333
+OTHER_USER_ID = 444444444444444444
 
 
 async def _create_event(db, *, event_id: str | None = None, **kwargs) -> str:
@@ -52,6 +53,9 @@ def _make_interaction(*, guild=None) -> MagicMock:
     if guild is None:
         interaction.guild.get_role.return_value = None
 
+    interaction.channel = MagicMock()
+    interaction.channel.send = AsyncMock()
+
     return interaction
 
 
@@ -80,20 +84,30 @@ class TestCustomIdRoundTrip:
             assert _TEMPLATE.match(button.item.custom_id)
 
 
-class TestBuildRsvpView:
+class TestBuildEventControlsView:
     def test_creates_three_buttons(self) -> None:
-        view = build_rsvp_view("e1")
+        view = build_event_controls_view("e1", [], [])
         assert len(view.children) == 3
 
     def test_buttons_cover_all_statuses(self) -> None:
-        view = build_rsvp_view("e1")
+        view = build_event_controls_view("e1", [], [])
         statuses = {child.status for child in view.children}
         assert statuses == set(RSVP_STATUSES)
 
     def test_buttons_are_persistent(self) -> None:
         """timeout=None 是持久化的必要條件之一。"""
-        view = build_rsvp_view("e1")
+        view = build_event_controls_view("e1", [], [])
         assert view.timeout is None
+
+    def test_no_position_select_when_no_role_slots(self) -> None:
+        """M8：沒設定職位的活動只有三顆按鈕，這個功能加進來之前的行為不變。"""
+        view = build_event_controls_view("e1", [], [])
+        assert len(view.children) == 3
+
+    def test_adds_position_select_when_role_slots_given(self) -> None:
+        slot = {"id": "s1", "position": "MT", "sort": 0}
+        view = build_event_controls_view("e1", [slot], [])
+        assert len(view.children) == 4
 
 
 class TestCallback:
@@ -283,3 +297,77 @@ class TestRestrictRsvp:
         await button.callback(interaction)
 
         assert await repo.list_rsvps(event_id, GUILD_ID) == []
+
+
+class TestClearsPositionOnNonYesRsvp:
+    """M8：位置選擇疊加在「參加」狀態之上，RSVP 改成非「參加」要連帶清空
+    位置選擇；讓出的名額若是確定名額，候補佇列裡最早報名的人要自動遞補，
+    並在頻道收到通知。"""
+
+    async def _make_slot(self, event_id: str, position: str = "D1") -> str:
+        await repo.set_event_role_slots(event_id, GUILD_ID, [position])
+        slots = await repo.list_event_role_slots(event_id, GUILD_ID)
+        return slots[0]["id"]
+
+    async def test_switching_to_maybe_clears_position(self, db) -> None:
+        event_id = await _create_event(db)
+        slot_id = await self._make_slot(event_id)
+        await repo.upsert_rsvp(event_id, GUILD_ID, USER_ID, "yes")
+        await repo.set_role_signup(event_id, GUILD_ID, USER_ID, slot_id, "武士")
+
+        await RsvpButton(event_id=event_id, status="maybe").callback(_make_interaction())
+
+        assert await repo.list_event_role_signups(event_id, GUILD_ID) == []
+
+    async def test_switching_to_no_clears_position(self, db) -> None:
+        event_id = await _create_event(db)
+        slot_id = await self._make_slot(event_id)
+        await repo.upsert_rsvp(event_id, GUILD_ID, USER_ID, "yes")
+        await repo.set_role_signup(event_id, GUILD_ID, USER_ID, slot_id, "武士")
+
+        await RsvpButton(event_id=event_id, status="no").callback(_make_interaction())
+
+        assert await repo.list_event_role_signups(event_id, GUILD_ID) == []
+
+    async def test_promotes_waitlist_and_notifies_channel(self, db) -> None:
+        event_id = await _create_event(db)
+        slot_id = await self._make_slot(event_id)
+        await repo.upsert_rsvp(event_id, GUILD_ID, USER_ID, "yes")
+        await repo.upsert_rsvp(event_id, GUILD_ID, OTHER_USER_ID, "yes")
+        await repo.set_role_signup(event_id, GUILD_ID, USER_ID, slot_id, "武士")
+        await repo.set_role_signup(event_id, GUILD_ID, OTHER_USER_ID, slot_id, "忍者")
+        interaction = _make_interaction()
+
+        await RsvpButton(event_id=event_id, status="no").callback(interaction)
+
+        signups = {
+            s["user_id"]: s["waitlisted"]
+            for s in await repo.list_event_role_signups(event_id, GUILD_ID)
+        }
+        assert signups[str(OTHER_USER_ID)] == 0
+        interaction.channel.send.assert_awaited_once()
+        _, kwargs = interaction.channel.send.call_args
+        assert str(OTHER_USER_ID) in kwargs["content"]
+
+    async def test_no_op_when_no_position_was_selected(self, db) -> None:
+        """對照組：本來就沒選職位的話，改 RSVP 不該出任何錯或多發通知。"""
+        event_id = await _create_event(db)
+        await self._make_slot(event_id)
+        await repo.upsert_rsvp(event_id, GUILD_ID, USER_ID, "yes")
+        interaction = _make_interaction()
+
+        await RsvpButton(event_id=event_id, status="maybe").callback(interaction)
+
+        interaction.channel.send.assert_not_awaited()
+
+    async def test_yes_status_does_not_clear_position(self, db) -> None:
+        """對照組：重複按「參加」（例如原本就是 yes）不該清空既有的位置選擇。"""
+        event_id = await _create_event(db)
+        slot_id = await self._make_slot(event_id)
+        await repo.upsert_rsvp(event_id, GUILD_ID, USER_ID, "yes")
+        await repo.set_role_signup(event_id, GUILD_ID, USER_ID, slot_id, "武士")
+
+        await RsvpButton(event_id=event_id, status="yes").callback(_make_interaction())
+
+        signups = await repo.list_event_role_signups(event_id, GUILD_ID)
+        assert len(signups) == 1

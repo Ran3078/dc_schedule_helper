@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 import discord
 
@@ -44,11 +45,15 @@ class InviteePickerView(discord.ui.View):
         description: str | None,
         event_id: str,
         allow_everyone_ping: bool,
+        positions: Sequence[str] = (),
     ) -> None:
         super().__init__(timeout=300)  # 5 分鐘沒動作就作廢，避免預覽訊息無限期卡著
         self.pending = pending
         self.description = description
         self.event_id = event_id
+        # M8：手把手往下一步（ConfirmEventView）轉傳，理由同
+        # views_datetime.DateTimePickerView 的說明。
+        self.positions = positions
         self.message: discord.Message | None = None
 
         self.selected_user_ids: list[int] = []
@@ -171,6 +176,7 @@ class InviteePickerView(discord.ui.View):
             role_ids=self.selected_role_ids,
             tag_everyone=self.tag_everyone,
             restrict_rsvp=self.restrict_rsvp,
+            positions=self.positions,
         )
         preview_row = build_preview_row(
             self.event_id, self.pending, self.description, restrict_rsvp=self.restrict_rsvp
