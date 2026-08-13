@@ -25,10 +25,13 @@ class Settings(BaseSettings):
     discord_app_id: int
 
     # 開發用伺服器（選填）。
-    # 本 bot 支援多伺服器，指令走 global 註冊 —— 但 Discord 對 global 指令有快取，
-    # 改動後最長要等 1 小時才會在各伺服器生效。填了這個之後，會額外對該伺服器做一次
-    # guild-scoped 同步（即時生效），開發時就不必等。
-    # 留空完全不影響功能，只是改指令定義後要等 Discord 傳播。
+    # 本 bot 支援多伺服器，指令一律走 global 註冊 —— Discord 對 global 指令有快取，
+    # 改動後最長要等 1 小時才會在各伺服器生效，這是刻意接受的取捨（見
+    # client.ScheduleBot._sync_commands 的說明：曾經試過額外對這個伺服器做一次
+    # guild-scoped 同步換取即時生效，但 Discord 不會把兩種註冊視為同一個指令、
+    # 不會自動去重，反而讓指令選單上每個指令都重複顯示兩次）。
+    # 填了這個只會在開機時清掉該伺服器過去累積的 guild-scoped 舊註冊，不會再拿它
+    # 多做一次同步。留空完全不影響功能。
     dev_guild_id: int | None = Field(
         default=None,
         # 相容舊的 GUILD_ID 命名，避免已填在 Render 上的值失效

@@ -196,9 +196,11 @@ Bot 可同時服務多個伺服器，每個伺服器有獨立的 `guild_settings
 ### 指令同步的取捨
 
 多伺服器必須用 global 註冊，但 Discord 對 global 指令有快取，改動後**最長要等 1 小時**
-才在各伺服器生效。填了 `DEV_GUILD_ID` 之後，會對該伺服器額外做一次 guild-scoped
-同步（即時生效），開發時就不必等。開發伺服器會同時有 global 與 guild 兩份註冊，
-Discord 的行為是 guild-scoped 優先，不會出現重複指令。
+才在各伺服器生效——這是刻意接受的取捨。曾經試過額外對 `DEV_GUILD_ID` 做一次
+guild-scoped 同步換取即時生效，但實測 Discord **不會**把 global 跟 guild-scoped
+這兩種註冊視為同一個指令、不會自動去重：開發伺服器的指令選單上，每個指令都會
+同時看到兩份一模一樣的紀錄。現在全部只走 global，`DEV_GUILD_ID` 只用來在開機時
+順便清掉該伺服器過去累積的 guild-scoped 舊註冊，不再拿它多做一次同步。
 
 ### 兩個規模天花板
 

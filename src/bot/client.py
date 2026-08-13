@@ -76,26 +76,24 @@ class ScheduleBot(commands.Bot):
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
-        """指令同步：global 為主，開發伺服器額外做一次即時同步。
+        """指令同步：一律走 global。
 
-        多伺服器必須用 global 註冊，但 Discord 對 global 指令有快取，改動後最長要等
-        1 小時才在各伺服器生效。因此若設了 DEV_GUILD_ID，就對該伺服器再做一次
-        guild-scoped 同步 —— guild-scoped 是即時生效的，開發時不必等。
-
-        副作用：開發伺服器會同時看到 global 與 guild 兩份註冊。Discord 的行為是
-        guild-scoped 優先，不會出現重複的指令。
+        多伺服器必須用 global 註冊，但 Discord 對 global 指令有快取，改動後
+        最長要等 1 小時才在各伺服器生效。這裡曾經額外對 DEV_GUILD_ID 做一次
+        guild-scoped 同步換取即時生效，但實測 Discord **不會**把 global 跟
+        guild-scoped 這兩種註冊視為同一個指令、不會自動去重——會讓開發伺服器
+        的指令選單上，每個指令都同時看到 global 跟 guild-scoped 兩份一模
+        一樣的紀錄。與其為了省一點等待時間製造這個更明顯的問題，不如全部
+        走 global；下面順便清空 DEV_GUILD_ID 過去累積的 guild-scoped 舊
+        註冊，讓已經在用的人不會繼續卡著重複的指令。
         """
+        if self.dev_guild is not None:
+            self.tree.clear_commands(guild=self.dev_guild)
+            await self.tree.sync(guild=self.dev_guild)
+            log.info("已清空開發伺服器 %s 舊的 guild-scoped 指令註冊", self.settings.dev_guild_id)
+
         synced_global = await self.tree.sync()
         log.info("已 global 同步 %d 個指令（各伺服器最長 1 小時內生效）", len(synced_global))
-
-        if self.dev_guild is not None:
-            self.tree.copy_global_to(guild=self.dev_guild)
-            synced_dev = await self.tree.sync(guild=self.dev_guild)
-            log.info(
-                "已對開發伺服器 %s 同步 %d 個指令（即時生效）",
-                self.settings.dev_guild_id,
-                len(synced_dev),
-            )
 
     async def _on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
