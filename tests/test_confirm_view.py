@@ -81,11 +81,6 @@ def _make_interaction(*, sent_message_id: int = 999999, guild=None) -> MagicMock
         fake_scheduled_event = MagicMock(id=555555)
         interaction.guild.create_scheduled_event = AsyncMock(return_value=fake_scheduled_event)
         interaction.guild.get_channel = MagicMock(return_value=interaction.channel)
-        # build_event_embed 現在會用 guild.get_member()/get_role() 查伺服器
-        # 暱稱，MagicMock 的屬性預設回傳另一個 MagicMock 不是 None，要明確
-        # 設成 None 才會落回 <@id> mention 標記（見 embeds.py 的說明）。
-        interaction.guild.get_member.return_value = None
-        interaction.guild.get_role.return_value = None
 
     return interaction
 
@@ -443,7 +438,6 @@ class TestConfirmAttachesRsvp:
         guild = SimpleNamespace(
             id=GUILD_ID,
             get_role=lambda rid: None,
-            get_member=lambda uid: None,
             members=[],
             create_scheduled_event=AsyncMock(return_value=MagicMock(id=555555)),
         )

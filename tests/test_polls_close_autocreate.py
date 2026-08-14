@@ -61,10 +61,6 @@ def _make_interaction() -> MagicMock:
     interaction.followup = AsyncMock()
     interaction.guild = MagicMock(id=GUILD_ID, members=[])
     interaction.guild.get_role.return_value = None
-    # build_event_embed 現在會用 guild.get_member() 查伺服器暱稱，MagicMock
-    # 的屬性預設回傳另一個 MagicMock 不是 None，要明確設成 None 才會落回
-    # <@id> mention 標記（見 embeds.py 的說明）。
-    interaction.guild.get_member.return_value = None
     return interaction
 
 

@@ -201,8 +201,7 @@ class ConfirmEventView(discord.ui.View):
                         self.user_ids, self.role_ids, tag_everyone=self.tag_everyone
                     ),
                     embed=build_event_embed(
-                        event_row, invitees, rsvp_summary, role_slots, role_signups,
-                        interaction.guild,
+                        event_row, invitees, rsvp_summary, role_slots, role_signups
                     ),
                     allowed_mentions=build_allowed_mentions(
                         self.user_ids, self.role_ids, tag_everyone=self.tag_everyone

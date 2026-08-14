@@ -80,21 +80,11 @@ class NativeEvents(commands.Cog):
 
         invitees = await repo.list_event_invitees(event_row["id"], guild.id)
         rsvps = await repo.list_rsvps(event_row["id"], guild.id)
-        # role_slots/role_signups 一併帶上：embed 是整包替換，沒帶的話已經
-        # 設定過職位的活動會在這次重繪後憑空少掉那幾個欄位（比照
-        # cogs/events.py._invite_impl／modals.EventEditModal 已經修過的
-        # 同一類問題）。
-        role_slots = await repo.list_event_role_slots(event_row["id"], guild.id)
-        role_signups = await repo.list_event_role_signups(event_row["id"], guild.id)
         summary = build_rsvp_summary(guild, invitees, rsvps)
 
         try:
             message = await channel.fetch_message(int(event_row["message_id"]))
-            await message.edit(
-                embed=build_event_embed(
-                    event_row, invitees, summary, role_slots, role_signups, guild
-                )
-            )
+            await message.edit(embed=build_event_embed(event_row, invitees, summary))
         except discord.HTTPException:
             log.warning(
                 "同步原生活動 %s 興趣後更新公告訊息失敗", event_row["id"], exc_info=True

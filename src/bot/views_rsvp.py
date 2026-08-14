@@ -70,9 +70,7 @@ async def _refresh_announcement(interaction: discord.Interaction, event: Row) ->
 
     try:
         await message.edit(
-            embed=build_event_embed(
-                event, invitees, summary, role_slots, role_signups, guild
-            ),
+            embed=build_event_embed(event, invitees, summary, role_slots, role_signups),
             view=build_event_controls_view(event["id"], role_slots, role_signups),
         )
     except discord.HTTPException:

@@ -125,9 +125,7 @@ class JobPickerView(discord.ui.View):
         try:
             message = await channel.fetch_message(int(event["message_id"]))
             await message.edit(
-                embed=build_event_embed(
-                    event, invitees, summary, role_slots, role_signups, interaction.guild
-                ),
+                embed=build_event_embed(event, invitees, summary, role_slots, role_signups),
                 view=build_event_controls_view(self.event_id, role_slots, role_signups),
             )
         except discord.HTTPException:

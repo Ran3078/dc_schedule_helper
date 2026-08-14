@@ -103,7 +103,7 @@ class PollVoteSelect(discord.ui.DynamicItem[discord.ui.Select], template=_VOTE_T
         options = await repo.list_poll_options(self.poll_id, poll["guild_id"])
         votes = await repo.list_poll_votes(self.poll_id, poll["guild_id"])
         try:
-            await message.edit(embed=build_poll_embed(poll, options, votes, interaction.guild))
+            await message.edit(embed=build_poll_embed(poll, options, votes))
         except discord.HTTPException:
             log.warning("更新投票 %s 的公告訊息失敗", self.poll_id, exc_info=True)
 

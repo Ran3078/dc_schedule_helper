@@ -56,10 +56,6 @@ def _make_scheduled_event(*, discord_event_id: int = DISCORD_EVENT_ID) -> MagicM
     event = MagicMock()
     event.id = discord_event_id
     event.guild = MagicMock(id=GUILD_ID)
-    # build_event_embed 現在會用 guild.get_member() 查伺服器暱稱，MagicMock
-    # 的屬性預設回傳另一個 MagicMock 不是 None，要明確設成 None 才會落回
-    # <@id> mention 標記（見 embeds.py 的說明）。
-    event.guild.get_member.return_value = None
     return event
 
 

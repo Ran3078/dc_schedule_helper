@@ -84,12 +84,6 @@ def _make_interaction(*, user: MagicMock, guild: MagicMock | None = None) -> Mag
     interaction.response = AsyncMock()
     interaction.followup = AsyncMock()
     interaction.guild = guild if guild is not None else MagicMock(id=GUILD_ID)
-    # build_event_embed 現在會用 guild.get_member()/get_role() 查伺服器暱稱，
-    # MagicMock 的屬性預設回傳另一個 MagicMock 不是 None，要明確設成 None
-    # 才會落回 <@id> mention 標記（見 embeds.py 的說明）。
-    if guild is None:
-        interaction.guild.get_member.return_value = None
-        interaction.guild.get_role.return_value = None
     return interaction
 
 
@@ -191,7 +185,6 @@ class TestCancel:
         scheduled = MagicMock()
         scheduled.cancel = AsyncMock()
         guild.get_scheduled_event = MagicMock(return_value=scheduled)
-        guild.get_member.return_value = None
         interaction = _make_interaction(user=_make_member(CREATOR_ID), guild=guild)
 
         await cog._cancel_impl(interaction, event_id, None)

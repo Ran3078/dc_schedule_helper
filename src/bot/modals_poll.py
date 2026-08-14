@@ -144,7 +144,7 @@ class PollDetailsModal(discord.ui.Modal, title="投票內容"):
         poll_options = await repo.list_poll_options(poll_id, interaction.guild_id)
 
         await interaction.response.send_message(
-            embed=build_poll_embed(poll, poll_options, [], interaction.guild),
+            embed=build_poll_embed(poll, poll_options, []),
             view=build_poll_vote_view(poll_id, poll_options, multi=self.multi),
         )
         message = await interaction.original_response()
