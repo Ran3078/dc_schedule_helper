@@ -422,7 +422,7 @@ class TestGuildAwareNames:
         summary = RsvpSummary(yes=[111])
         embed = build_event_embed(_event(), rsvp_summary=summary, guild=guild)
         field = next(f for f in embed.fields if f.name.startswith("✅ 參加"))
-        assert field.value == "拉麵"
+        assert field.value == "@拉麵"
         assert "<@111>" not in field.value
 
     def test_rsvp_summary_falls_back_to_mention_when_member_not_cached(self) -> None:
@@ -439,20 +439,20 @@ class TestGuildAwareNames:
         summary = RsvpSummary(yes=[111, 222])
         embed = build_event_embed(_event(), rsvp_summary=summary, guild=guild)
         field = next(f for f in embed.fields if f.name.startswith("✅ 參加"))
-        assert field.value == "拉麵、看看"
+        assert field.value == "@拉麵、@看看"
 
     def test_creator_field_shows_display_name(self) -> None:
         guild = _make_guild(members={123456789: "拉麵"})
         embed = build_event_embed(_event(creator_id="123456789"), guild=guild)
         creator_field = next(f for f in embed.fields if "發起人" in f.name)
-        assert creator_field.value == "拉麵"
+        assert creator_field.value == "@拉麵"
 
     def test_invitee_user_shows_display_name(self) -> None:
         guild = _make_guild(members={111: "拉麵"})
         invitees = [{"target_type": "user", "target_id": "111"}]
         embed = build_event_embed(_event(), invitees=invitees, guild=guild)
         field = next(f for f in embed.fields if "邀請對象" in f.name)
-        assert field.value == "拉麵"
+        assert field.value == "@拉麵"
 
     def test_invitee_role_shows_role_name(self) -> None:
         guild = _make_guild(roles={222: "幹部"})
@@ -481,7 +481,7 @@ class TestGuildAwareNames:
         signups = [{"role_slot_id": "s1", "user_id": "111", "job": "武士", "waitlisted": 0}]
         embed = build_event_embed(_event(), role_slots=[slot], role_signups=signups, guild=guild)
         field = next(f for f in embed.fields if "D1" in f.name)
-        assert "拉麵（武士）" in field.value
+        assert "@拉麵（武士）" in field.value
         assert "<@111>" not in field.value
 
     def test_poll_vote_shows_display_name(self) -> None:
@@ -490,4 +490,4 @@ class TestGuildAwareNames:
         votes = [{"option_id": "o1", "user_id": "111"}]
         embed = build_poll_embed(_poll(), options, votes, guild)
         field = next(f for f in embed.fields if f.name.startswith("A"))
-        assert field.value == "拉麵"
+        assert field.value == "@拉麵"

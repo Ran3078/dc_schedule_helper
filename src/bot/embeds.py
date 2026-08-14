@@ -33,8 +33,10 @@ def _display_name(guild: discord.Guild | None, user_id: str | int) -> str:
     Discord 伺服器端會把使用者資料整包附進訊息回傳，保證每個客戶端都能
     正確解析（見 `lib/mentions.py` 為什麼推播通知要走 content 而非 embed）。
 
-    因此這裡改用固定的純文字暱稱，不依賴客戶端本機快取，三個平台顯示
-    保證一致。代價是這些名字不再是可點擊跳轉個人頁面的 mention。
+    因此這裡改用固定的純文字暱稱（前面加 `@` 只是視覺上維持「這是在標記
+    一個人」的樣子，不是真正的 mention 標記，不會觸發任何解析或通知），
+    不依賴客戶端本機快取，三個平台顯示保證一致。代價是這些名字不再是
+    可點擊跳轉個人頁面的 mention。
 
     `guild` 沒給、或該使用者不在 guild 的成員快取裡（已離開伺服器、或
     bot 剛啟動還沒抓到完整成員列表）時，退回原本的 `<@id>` mention 標記
@@ -43,7 +45,7 @@ def _display_name(guild: discord.Guild | None, user_id: str | int) -> str:
     if guild is not None:
         member = guild.get_member(int(user_id))
         if member is not None:
-            return member.display_name
+            return f"@{member.display_name}"
     return f"<@{user_id}>"
 
 
