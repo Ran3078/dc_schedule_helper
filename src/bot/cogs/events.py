@@ -302,7 +302,7 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
 
         await interaction.followup.send(
             embed=build_event_embed(
-                event, invitees, rsvp_summary, role_slots, role_signups
+                event, invitees, rsvp_summary, role_slots, role_signups, interaction.guild
             )
         )
 
@@ -404,7 +404,7 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
                 message = await channel.fetch_message(int(event["message_id"]))
                 await message.edit(
                     embed=build_event_embed(
-                        event, invitees, summary, role_slots, role_signups
+                        event, invitees, summary, role_slots, role_signups, interaction.guild
                     ),
                     view=build_event_controls_view(
                         event_id, role_slots, role_signups, disabled=True
@@ -520,7 +520,7 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
                 # 重繪後憑空少掉那幾個欄位（embed 是整包替換，不是只補丁）。
                 await message.edit(
                     embed=build_event_embed(
-                        event, invitees, summary, role_slots, role_signups
+                        event, invitees, summary, role_slots, role_signups, interaction.guild
                     )
                 )
             except discord.HTTPException:

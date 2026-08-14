@@ -270,7 +270,7 @@ class TimeSlotPickerView(discord.ui.View):
         if channel is not None and hasattr(channel, "send"):
             try:
                 message = await channel.send(
-                    embed=build_poll_embed(poll, poll_options, []),
+                    embed=build_poll_embed(poll, poll_options, [], interaction.guild),
                     view=build_poll_vote_view(poll_id, poll_options, multi=self.params.multi),
                 )
             except discord.HTTPException:

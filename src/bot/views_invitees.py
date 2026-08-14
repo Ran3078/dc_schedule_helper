@@ -189,7 +189,7 @@ class InviteePickerView(discord.ui.View):
 
         await interaction.response.edit_message(
             content="請確認活動內容，按「發布」才會公開發文；按「取消」則不會建立任何資料：",
-            embed=build_event_embed(preview_row, preview_invitees),
+            embed=build_event_embed(preview_row, preview_invitees, guild=interaction.guild),
             view=confirm_view,
         )
         confirm_view.message = await interaction.original_response()

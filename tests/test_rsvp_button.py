@@ -52,6 +52,11 @@ def _make_interaction(*, guild=None) -> MagicMock:
     interaction.guild = guild if guild is not None else MagicMock(id=GUILD_ID, members=[])
     if guild is None:
         interaction.guild.get_role.return_value = None
+        # build_event_embed 現在會用 guild.get_member() 查伺服器暱稱（見
+        # embeds.py 的說明）——MagicMock 的屬性預設回傳另一個 MagicMock 不是
+        # None，不明確設成 None 的話會被誤判成「查到成員」，顯示出 MagicMock
+        # 的 repr 字串而不是預期的 <@id> mention 標記。
+        interaction.guild.get_member.return_value = None
 
     interaction.channel = MagicMock()
     interaction.channel.send = AsyncMock()
@@ -266,9 +271,12 @@ class TestRestrictRsvp:
         event_id = await _create_event(db, restrict_rsvp=True, role_ids=[555])
         button = RsvpButton(event_id=event_id, status="yes")
 
-        role = SimpleNamespace(id=555, members=[SimpleNamespace(id=USER_ID, bot=False)])
+        role = SimpleNamespace(
+            id=555, name="測試身分組", members=[SimpleNamespace(id=USER_ID, bot=False)]
+        )
         guild = MagicMock(id=GUILD_ID)
         guild.get_role.side_effect = lambda rid: role if rid == 555 else None
+        guild.get_member.return_value = None
         interaction = _make_interaction(guild=guild)
 
         await button.callback(interaction)

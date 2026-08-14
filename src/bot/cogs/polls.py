@@ -172,7 +172,7 @@ class Polls(commands.GroupCog, group_name="poll", group_description="投票"):
                 try:
                     message = await channel.fetch_message(int(poll["message_id"]))
                     await message.edit(
-                        embed=build_poll_embed(poll, options, votes),
+                        embed=build_poll_embed(poll, options, votes, interaction.guild),
                         view=build_poll_vote_view(
                             poll_id, options, multi=bool(poll["multi"]), disabled=True
                         ),
@@ -274,7 +274,9 @@ class Polls(commands.GroupCog, group_name="poll", group_description="投票"):
         try:
             message = await channel.send(
                 content=build_mention_content(voter_ids, [], tag_everyone=False),
-                embed=build_event_embed(event_row, invitees, rsvp_summary),
+                embed=build_event_embed(
+                    event_row, invitees, rsvp_summary, guild=interaction.guild
+                ),
                 allowed_mentions=build_allowed_mentions(voter_ids, [], tag_everyone=False),
                 # 投票自動建立的活動不可能已經有職位設定，固定傳空清單。
                 view=build_event_controls_view(event_id, [], []),
@@ -309,7 +311,9 @@ class Polls(commands.GroupCog, group_name="poll", group_description="投票"):
 
         options = await repo.list_poll_options(poll_id, interaction.guild_id)
         votes = await repo.list_poll_votes(poll_id, interaction.guild_id)
-        await interaction.followup.send(embed=build_poll_embed(poll, options, votes))
+        await interaction.followup.send(
+            embed=build_poll_embed(poll, options, votes, interaction.guild)
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -298,7 +298,8 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
                     message = await channel.fetch_message(int(event_row["message_id"]))
                     await message.edit(
                         embed=build_event_embed(
-                            event_row, invitees, summary, role_slots, role_signups
+                            event_row, invitees, summary, role_slots, role_signups,
+                            interaction.guild,
                         )
                     )
                 except discord.HTTPException:
