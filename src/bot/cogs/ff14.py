@@ -5,32 +5,30 @@ FF14 團本模式的活動（M8）。
 補職位設定」的兩段式流程）——職位名額是 FF14 團本招募專屬的東西，應該在
 建立活動當下就一次收好，見 `modals_ff14.Ff14RecruitModal`。
 
-驗證邏輯（權限／標題長度／時間解析／時長解析／公告頻道）跟
-`cogs/events.py` 的 `Events._create_impl` 幾乎一樣——這是刻意複製一份，不是
-漏了抽共用函式：`_resolve_channel` 這類頻道解析本來就是「每個 cog 各自
-複製一份」而非共用（見 `PROCESS.md`），這裡延續同樣的慣例。
+權限／標題／時間／時長驗證跟 `cogs/events.py` 的 `Events._create_impl`
+共用同一個 `cogs/_shared.validate_event_draft`（M9 起，`Ff14`／`Events`／
+`MentionMenu` 三個入口共用）；公告頻道解析（`_resolve_channel`／
+`_resolve_announce_channel`）維持每個 cog 各自複製一份，理由見
+`PROCESS.md` 既有慣例——這兩件事的抽象邊界不一樣，前者是「驗證規則」，
+後者是「頻道快取/API 呼叫的小 glue」。
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from src.bot.cogs._shared import is_organizer, resolve_user_tz
+from src.bot.cogs._shared import DraftValidationError, validate_event_draft
 from src.bot.embeds import Row
-from src.bot.modals import PendingEvent
 from src.bot.modals_ff14 import Ff14RecruitModal
 from src.db import repo
 from src.lib.ids import new_id
-from src.lib.timeparse import TimeParseError, parse_datetime, parse_duration_minutes
 
 log = logging.getLogger(__name__)
-
-# 跟 cogs/events.py 的 MAX_TITLE_LENGTH 同一個數字，理由同該檔案的說明。
-MAX_TITLE_LENGTH = 200
 
 
 class Ff14(commands.Cog):
@@ -87,60 +85,17 @@ class Ff14(commands.Cog):
     ) -> None:
         assert interaction.guild_id is not None  # guild_only() 保證
 
+        draft = await validate_event_draft(
+            self.bot, interaction, title=title, time=time, location=location, duration=duration
+        )
+        if isinstance(draft, DraftValidationError):
+            await interaction.response.send_message(draft.message, ephemeral=True)
+            return
+
         guild_settings = await repo.get_guild_settings(interaction.guild_id)
-        if not isinstance(interaction.user, discord.Member) or not is_organizer(
-            interaction.user, guild_settings
-        ):
-            await interaction.response.send_message(
-                "這個伺服器限定特定身分組才能建立活動，請洽伺服器管理員。", ephemeral=True
-            )
-            return
-
-        title = title.strip()
-        if not title:
-            await interaction.response.send_message("活動標題不能是空的。", ephemeral=True)
-            return
-        if len(title) > MAX_TITLE_LENGTH:
-            await interaction.response.send_message(
-                f"活動標題太長了（{len(title)} 字，上限 {MAX_TITLE_LENGTH} 字）。",
-                ephemeral=True,
-            )
-            return
-
-        tz = await resolve_user_tz(self.bot, interaction.guild_id, interaction.user.id)
-
-        starts_at_utc: int | None = None
-        if time:
-            try:
-                starts_at_utc = parse_datetime(time, tz)
-            except TimeParseError as exc:
-                await interaction.response.send_message(str(exc), ephemeral=True)
-                return
-
-        duration_minutes: int | None = None
-        if duration:
-            try:
-                duration_minutes = parse_duration_minutes(duration)
-            except TimeParseError as exc:
-                await interaction.response.send_message(str(exc), ephemeral=True)
-                return
-            if duration_minutes <= 0:
-                await interaction.response.send_message("時長必須大於 0。", ephemeral=True)
-                return
-
         announce_channel = await self._resolve_announce_channel(interaction, guild_settings)
         channel_id = announce_channel.id if announce_channel is not None else interaction.channel_id
-
-        pending = PendingEvent(
-            guild_id=interaction.guild_id,
-            channel_id=channel_id,
-            creator_id=interaction.user.id,
-            title=title,
-            tz=tz,
-            location=(location.strip() if location and location.strip() else None),
-            duration_minutes=duration_minutes,
-            starts_at_utc=starts_at_utc,
-        )
+        pending = replace(draft, channel_id=channel_id)
 
         # Modal 必須是這個 interaction 的第一個回應，不能先 defer。
         await interaction.response.send_modal(Ff14RecruitModal(pending, event_id=new_id()))

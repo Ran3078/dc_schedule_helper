@@ -103,6 +103,24 @@ async def set_user_tz(user_id: int | str, tz: str) -> None:
     )
 
 
+async def list_guilds_with_weekly_digest_enabled() -> list[Row]:
+    """每週活動清單（M9）任務迴圈用：一次撈出所有開啟這個功能的伺服器。
+    這是本檔案開頭紀律第 5 點那個唯一例外（系統層級背景工作，不是代表
+    任何特定伺服器的使用者操作），理由同 `list_due_reminders()`。
+    """
+    return await engine.query_all(
+        "SELECT * FROM guild_settings WHERE weekly_digest_enabled = 1"
+    )
+
+
+async def set_last_weekly_digest_at(guild_id: int | str, sent_at: int) -> None:
+    await engine.execute(
+        "UPDATE guild_settings SET last_weekly_digest_at = ?, updated_at = ? "
+        "WHERE guild_id = ?",
+        (sent_at, now_ms(), str(guild_id)),
+    )
+
+
 # ── 母體歸屬檢查 ──────────────────────────────────────────────────────────
 
 
@@ -382,6 +400,19 @@ async def list_events(
             (str(guild_id), now_ms(), limit),
         )
     raise ValueError(f"未知的 scope: {scope!r}（應為 upcoming/mine/all）")
+
+
+async def list_upcoming_events_in_window(
+    guild_id: int | str, start_utc: int, end_utc: int, *, limit: int = 25
+) -> list[Row]:
+    """列出 `[start_utc, end_utc]`（含頭尾）之間開始的未取消活動，依時間排序
+    ——每週活動清單（M9）跟 @提及選單的「本週活動」按鈕共用這個函式，都是
+    「現在起 7 天內」這個窗口。"""
+    return await engine.query_all(
+        "SELECT * FROM events WHERE guild_id = ? AND status = 'scheduled' "
+        "AND starts_at_utc BETWEEN ? AND ? ORDER BY starts_at_utc ASC LIMIT ?",
+        (str(guild_id), start_utc, end_utc, limit),
+    )
 
 
 async def cancel_event(event_id: str, guild_id: int | str) -> bool:
