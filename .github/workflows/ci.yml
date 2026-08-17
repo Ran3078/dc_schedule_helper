@@ -1,0 +1,29 @@
+name: CI
+
+# PR 分支保護規則的關卡：master 要求這個 workflow 的 test job 通過才能合併
+# （見 README「分支保護」章節）。測試本身不需要任何雲端密鑰——db fixture
+# 一律用本機 SQLite 檔（見 tests/conftest.py），所以這裡不用設定任何 secrets。
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest)
+        run: pytest -q
