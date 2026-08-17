@@ -23,6 +23,8 @@ INITIAL_COGS: tuple[str, ...] = (
     "src.bot.cogs.native_events",
     "src.bot.cogs.settings",  # 同一個模組裡 Settings／Timezone 兩個 cog 都在
     "src.bot.cogs.ff14",  # /ff14_recruit（M8）
+    "src.bot.cogs.mention_menu",  # @提及快速選單（M9）
+    "src.bot.cogs.weekly_digest",  # 每週活動清單（M9）
 )
 
 

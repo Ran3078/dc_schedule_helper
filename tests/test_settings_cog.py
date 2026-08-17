@@ -114,6 +114,29 @@ class TestSettingsImpl:
         settings = await repo.get_guild_settings(GUILD_ID)
         assert settings["sync_native_events"] == 0
 
+    async def test_weekly_digest_toggle(self, db) -> None:
+        cog = Settings(MagicMock())
+        interaction = _make_interaction()
+
+        await cog._settings_impl(
+            interaction, None, None, None, None, False, None, None, True
+        )
+
+        settings = await repo.get_guild_settings(GUILD_ID)
+        assert settings["weekly_digest_enabled"] == 1
+        args, _ = interaction.response.send_message.call_args
+        assert "每週活動清單" in args[0]
+        assert "開啟" in args[0]
+
+    async def test_weekly_digest_omitted_leaves_default_disabled(self, db) -> None:
+        cog = Settings(MagicMock())
+        interaction = _make_interaction()
+
+        await cog._settings_impl(interaction, None, "Asia/Tokyo", None, None, False, None, None)
+
+        settings = await repo.get_guild_settings(GUILD_ID)
+        assert settings["weekly_digest_enabled"] == 0
+
     async def test_invalid_tz_rejected_without_writing(self, db) -> None:
         cog = Settings(MagicMock())
         interaction = _make_interaction()

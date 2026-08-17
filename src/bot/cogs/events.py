@@ -7,6 +7,7 @@ FF14 團本職位名額改由獨立指令 `/ff14_recruit`（見 `cogs/ff14.py`�
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,20 +16,21 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.bot import native_events
-from src.bot.cogs._shared import is_organizer, resolve_user_tz
+from src.bot.cogs._shared import (
+    DraftValidationError,
+    is_organizer,
+    resolve_user_tz,
+    validate_event_draft,
+)
 from src.bot.embeds import Row, build_event_embed, build_event_list_embed
-from src.bot.modals import EventDescriptionModal, EventEditModal, PendingEvent
+from src.bot.modals import EventDescriptionModal, EventEditModal
 from src.bot.views_rsvp import build_event_controls_view
 from src.db import repo
 from src.domain.rsvp import build_rsvp_summary
 from src.lib.ids import new_id
 from src.lib.mentions import build_allowed_mentions, build_mention_content
-from src.lib.timeparse import TimeParseError, parse_datetime, parse_duration_minutes
 
 log = logging.getLogger(__name__)
-
-# Discord Embed 標題硬上限 256 字元；預留欄位標籤與圖示空間，訂一個更保守的上限
-MAX_TITLE_LENGTH = 200
 
 _SCOPE_TITLES = {
     "upcoming": "📅 即將到來的活動",
@@ -115,70 +117,26 @@ class Events(commands.GroupCog, group_name="event", group_description="活動管
     ) -> None:
         assert interaction.guild_id is not None  # guild_only() 保證
 
-        guild_settings = await repo.get_guild_settings(interaction.guild_id)
-        if not isinstance(interaction.user, discord.Member) or not is_organizer(
-            interaction.user, guild_settings
-        ):
-            await interaction.response.send_message(
-                "這個伺服器限定特定身分組才能建立活動，請洽伺服器管理員。", ephemeral=True
-            )
+        # 權限／標題／時間／時長驗證集中在 _shared.validate_event_draft——
+        # /event create、/ff14_recruit、@提及選單的快速建立三個入口共用同一套
+        # 規則，理由見該函式的說明。
+        draft = await validate_event_draft(
+            self.bot, interaction, title=title, time=time, location=location, duration=duration
+        )
+        if isinstance(draft, DraftValidationError):
+            await interaction.response.send_message(draft.message, ephemeral=True)
             return
-
-        title = title.strip()
-        if not title:
-            await interaction.response.send_message("活動標題不能是空的。", ephemeral=True)
-            return
-        if len(title) > MAX_TITLE_LENGTH:
-            await interaction.response.send_message(
-                f"活動標題太長了（{len(title)} 字，上限 {MAX_TITLE_LENGTH} 字）。",
-                ephemeral=True,
-            )
-            return
-
-        tz = await resolve_user_tz(self.bot, interaction.guild_id, interaction.user.id)
-
-        # time 是選填的：留空的話，Modal 送出後會改顯示日期時間挑選器
-        # （見 modals.py 的分流邏輯與 views_datetime.py 開頭對 Discord
-        # 元件限制的說明 —— 沒有原生日期選擇元件，只能用下拉選單模擬）。
-        starts_at_utc: int | None = None
-        if time:
-            try:
-                starts_at_utc = parse_datetime(time, tz)
-            except TimeParseError as exc:
-                await interaction.response.send_message(str(exc), ephemeral=True)
-                return
-
-        duration_minutes: int | None = None
-        if duration:
-            try:
-                duration_minutes = parse_duration_minutes(duration)
-            except TimeParseError as exc:
-                await interaction.response.send_message(str(exc), ephemeral=True)
-                return
-            if duration_minutes <= 0:
-                await interaction.response.send_message(
-                    "時長必須大於 0。", ephemeral=True
-                )
-                return
 
         # 公告要發到哪個頻道，這裡先定案，之後 EventDescriptionModal →
         # DateTimePickerView/InviteePickerView → ConfirmEventView 全程沿用
         # 這個 pending.channel_id，不必每一步都重新查一次
         # announce_channel_id（也不會發生「這一步查到的跟下一步查到的剛好
-        # 不一樣」這種不一致）。
+        # 不一樣」這種不一致）。validate_event_draft 回傳的 draft.channel_id
+        # 只是 interaction.channel_id 佔位，這裡換成真正解析出來的公告頻道。
+        guild_settings = await repo.get_guild_settings(interaction.guild_id)
         announce_channel = await self._resolve_announce_channel(interaction, guild_settings)
         channel_id = announce_channel.id if announce_channel is not None else interaction.channel_id
-
-        pending = PendingEvent(
-            guild_id=interaction.guild_id,
-            channel_id=channel_id,
-            creator_id=interaction.user.id,
-            title=title,
-            tz=tz,
-            location=(location.strip() if location and location.strip() else None),
-            duration_minutes=duration_minutes,
-            starts_at_utc=starts_at_utc,
-        )
+        pending = replace(draft, channel_id=channel_id)
 
         # Modal 必須是這個 interaction 的第一個回應，不能先 defer。
         # 活動內容（選填）在這一步之後才收集；送出後還有一道公開發布前的

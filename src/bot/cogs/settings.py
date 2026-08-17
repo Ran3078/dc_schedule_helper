@@ -47,6 +47,8 @@ class Settings(commands.Cog):
         clear_organizer_role="清空上面那個限制，恢復成所有人皆可（選填，預設否）",
         everyone_ping="是否允許 @everyone 通知（選填）",
         sync_native_events="是否同步到 Discord 原生「活動」分頁（選填）",
+        weekly_digest="是否每週日 00:00（伺服器時區）自動發未來 7 天活動預告到公告頻道"
+        "（選填，預設關閉）",
     )
     @app_commands.guild_only()
     async def settings(
@@ -59,6 +61,7 @@ class Settings(commands.Cog):
         clear_organizer_role: bool = False,
         everyone_ping: bool | None = None,
         sync_native_events: bool | None = None,
+        weekly_digest: bool | None = None,
     ) -> None:
         # 邏輯拆到 _settings_impl：方便用假 interaction 直接測，不用真的觸發
         # send_message（比照 events.py／polls.py 的 _impl 拆法）。
@@ -71,6 +74,7 @@ class Settings(commands.Cog):
             clear_organizer_role,
             everyone_ping,
             sync_native_events,
+            weekly_digest,
         )
 
     async def _settings_impl(
@@ -83,6 +87,7 @@ class Settings(commands.Cog):
         clear_organizer_role: bool,
         everyone_ping: bool | None,
         sync_native_events: bool | None,
+        weekly_digest: bool | None = None,
     ) -> None:
         assert interaction.guild_id is not None  # guild_only() 保證
 
@@ -121,6 +126,9 @@ class Settings(commands.Cog):
         if sync_native_events is not None:
             fields["sync_native_events"] = int(sync_native_events)
             lines.append(f"同步原生活動分頁 → {'開啟' if sync_native_events else '關閉'}")
+        if weekly_digest is not None:
+            fields["weekly_digest_enabled"] = int(weekly_digest)
+            lines.append(f"每週活動清單 → {'開啟' if weekly_digest else '關閉'}")
 
         if not fields:
             await interaction.response.send_message(
