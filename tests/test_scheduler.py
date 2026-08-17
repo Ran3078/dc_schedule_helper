@@ -98,23 +98,6 @@ class TestSendsOnTime:
         row = await db.query_one("SELECT state FROM reminders WHERE id = ?", (reminder_id,))
         assert row["state"] == "sent"
 
-    async def test_sends_content_with_invitee_mentions(self, db) -> None:
-        event_id, _ = await _create_event_with_reminder(
-            db,
-            starts_at_utc=self.STARTS_AT,
-            offset_min=self.OFFSET_MIN,
-            user_ids=[111],
-            role_ids=[222],
-        )
-        reminder = await _due_reminder_for(db, event_id)
-
-        channel = _make_channel()
-        scheduler, _ = _make_scheduler(channel=channel)
-        await scheduler._process_reminder(reminder, PROCESS_NOW)
-
-        _, kwargs = channel.send.call_args
-        assert kwargs["content"] == "<@111> <@&222>"
-
     async def test_embed_reflects_event_title(self, db) -> None:
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
@@ -285,19 +268,20 @@ class TestTickSurvivesTransientFailures:
         channel.send.assert_awaited_once()
 
 
-class TestTagsRsvpdUsersEvenIfNotInvited:
-    """已經按過參加/待定的人，就算建立活動時沒被明確邀請，提醒也該點名到他們
-    —— 不然「有人主動說要去，卻收不到提醒」會很奇怪。這是實際回報過的體驗
-    問題：活動沒選邀請對象時，提醒完全不會 tag 任何人，沒人會注意到。
+class TestOnlyTagsYesAndMaybeRsvps:
+    """提醒只 tag 實際回覆「參加」或「待定」的人——不看邀請名單（個別使用者／
+    身分組／@everyone）。這是實際回報過的體驗問題：邀請名單裡有身分組時，
+    身分組是整組一起 tag，Discord 沒有「排除身分組裡特定成員」這種機制，
+    結果變成已經按「不參加」的人還是會被那個身分組通知到，等於白按了。
     """
 
     STARTS_AT = PROCESS_NOW + 40 * MINUTE
     OFFSET_MIN = 45
 
-    async def test_tags_user_who_rsvpd_yes_without_being_invited(self, db) -> None:
+    async def test_tags_user_who_rsvpd_yes(self, db) -> None:
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
-        )  # 沒有 user_ids/role_ids，等同「忘記選邀請對象」
+        )
         await repo.upsert_rsvp(event_id, GUILD_ID, 999, "yes")
         reminder = await _due_reminder_for(db, event_id)
 
@@ -323,10 +307,27 @@ class TestTagsRsvpdUsersEvenIfNotInvited:
         _, kwargs = channel.send.call_args
         assert kwargs["content"] == "<@111>"
 
-    async def test_does_not_duplicate_user_already_invited(self, db) -> None:
-        """本來就在邀請名單裡、又自己按了參加的人，只該出現一次。"""
+    async def test_invited_but_unresponded_user_is_not_tagged(self, db) -> None:
+        """邀請名單裡的人沒回覆就不 tag——催促未回覆的人是 /event ping 的
+        工作，不是自動提醒的工作。"""
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
+        )
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] is None
+
+    async def test_invited_role_is_never_mentioned(self, db) -> None:
+        """邀請名單裡的身分組完全不會出現在提醒內容裡——這正是這次修復的
+        bug：身分組 tag 是整組一起通知，沒辦法排除已經按「不參加」的成員。
+        """
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, role_ids=[777]
         )
         await repo.upsert_rsvp(event_id, GUILD_ID, 111, "yes")
         reminder = await _due_reminder_for(db, event_id)
@@ -337,23 +338,11 @@ class TestTagsRsvpdUsersEvenIfNotInvited:
 
         _, kwargs = channel.send.call_args
         assert kwargs["content"] == "<@111>"
+        assert "&777" not in kwargs["content"]
+        assert kwargs["allowed_mentions"].roles == []
 
-    async def test_combines_invited_and_rsvpd_users(self, db) -> None:
-        event_id, _ = await _create_event_with_reminder(
-            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
-        )
-        await repo.upsert_rsvp(event_id, GUILD_ID, 222, "yes")
-        reminder = await _due_reminder_for(db, event_id)
-
-        channel = _make_channel()
-        scheduler, _ = _make_scheduler(channel=channel)
-        await scheduler._process_reminder(reminder, PROCESS_NOW)
-
-        _, kwargs = channel.send.call_args
-        assert kwargs["content"] == "<@111> <@222>"
-
-    async def test_no_invitees_and_no_rsvps_sends_no_mention(self, db) -> None:
-        """兩邊都沒人時該送 None，不是空字串。"""
+    async def test_no_rsvps_sends_no_mention(self, db) -> None:
+        """沒有任何人回覆時該送 None，不是空字串。"""
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
         )

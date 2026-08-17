@@ -96,27 +96,24 @@ class Scheduler(commands.Cog):
             await repo.mark_reminder_failed(reminder["id"])
             return
 
-        invitees = await repo.list_event_invitees(reminder["event_id"], reminder["guild_id"])
-        user_ids = {int(i["target_id"]) for i in invitees if i["target_type"] == "user"}
-        role_ids = [int(i["target_id"]) for i in invitees if i["target_type"] == "role"]
-        tag_everyone = any(i["target_type"] == "everyone" for i in invitees)
-
-        # 已經表態「參加」或「待定」的人，就算當初建立活動時沒被明確邀請
-        # （例如揪辦活動的人忘記選邀請對象），提醒還是該點名到他們 —— 誰
-        # 能回覆本來就不受邀請名單限制（見 domain/rsvp.py），提醒對象同理
-        # 不該只看邀請名單，不然「有人主動說要去，卻收不到提醒」會很怪。
+        # 提醒只 tag 已經表態「參加」或「待定」的人 —— 不用邀請名單本身
+        # （個別使用者／身分組／@everyone）。身分組是整組一起 tag，Discord
+        # 沒有「身分組成員裡排除特定人」這種機制，只要邀請名單裡有身分組，
+        # 裡面已經按「不參加」的人還是會被那個身分組 tag 通知到，等於白
+        # 按了不參加。改成只看 RSVP 狀態就沒有這個問題：誰能回覆本來就不
+        # 受邀請名單限制（見 domain/rsvp.py），這裡直接依實際回覆結果 tag，
+        # 邀請名單只在建立/催促（/event ping）時才有意義。
         rsvps = await repo.list_rsvps(reminder["event_id"], reminder["guild_id"])
-        user_ids |= {int(r["user_id"]) for r in rsvps if r["status"] in ("yes", "maybe")}
-        user_ids_list = sorted(user_ids)
+        user_ids_list = sorted(
+            {int(r["user_id"]) for r in rsvps if r["status"] in ("yes", "maybe")}
+        )
 
         try:
             await channel.send(
-                content=build_mention_content(
-                    user_ids_list, role_ids, tag_everyone=tag_everyone
-                ),
+                content=build_mention_content(user_ids_list, [], tag_everyone=False),
                 embed=build_reminder_embed(reminder),
                 allowed_mentions=build_allowed_mentions(
-                    user_ids_list, role_ids, tag_everyone=tag_everyone
+                    user_ids_list, [], tag_everyone=False
                 ),
             )
         except discord.HTTPException:
