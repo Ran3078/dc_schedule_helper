@@ -217,3 +217,17 @@ guild-scoped 同步換取即時生效，但實測 Discord **不會**把 global �
 Migration **必須可重複執行**（`CREATE TABLE IF NOT EXISTS` 等），因為 Render 每次
 deploy 都會跑一遍。切語句是用單純的分號分割，所以檔案內不要出現 trigger、
 `BEGIN...END`，或字串常值裡的分號。
+
+---
+
+## CI／分支保護
+
+`.github/workflows/ci.yml` 在每個 PR跟推到 `master` 時跑 `ruff check .` ＋
+`pytest -q`。測試不需要任何雲端密鑰——`tests/conftest.py` 的 `db` fixture
+一律用本機臨時 SQLite 檔，所以這個 workflow 不用設定任何 GitHub secrets。
+
+單人開發沒有另一個人可以核准 PR（GitHub 不允許自己核准自己的 PR），所以
+分支保護規則不要求 review，改成要求這個 CI 通過：GitHub 上
+Settings → Branches → Add rule（`master`）→ 勾選
+**Require status checks to pass before merging**，選 `test` 這個 job。
+這樣測試沒過就不能合併，效果等同「有人把關」，但不用維護額外的審核帳號。
