@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -71,9 +72,28 @@ def _make_scheduler(*, channel=None, fetch_channel_result=None) -> tuple[Schedul
     return Scheduler(bot), bot
 
 
-def _make_channel() -> MagicMock:
+def _make_guild(*, roles: dict[int, SimpleNamespace] | None = None) -> MagicMock:
+    """比照 test_invitees_expand.py 的假 guild：只要有 get_role(id) 跟
+    role.members 就能測角色展開，不需要真的連 Discord。"""
+    guild = MagicMock()
+    roles = roles or {}
+    guild.get_role.side_effect = lambda rid: roles.get(rid)
+    guild.members = []
+    return guild
+
+
+def _member(user_id: int, *, bot: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(id=user_id, bot=bot)
+
+
+def _role(role_id: int, members: list[SimpleNamespace]) -> SimpleNamespace:
+    return SimpleNamespace(id=role_id, members=members)
+
+
+def _make_channel(*, guild: MagicMock | None = None) -> MagicMock:
     channel = MagicMock()
     channel.send = AsyncMock()
+    channel.guild = guild if guild is not None else _make_guild()
     return channel
 
 
@@ -268,11 +288,13 @@ class TestTickSurvivesTransientFailures:
         channel.send.assert_awaited_once()
 
 
-class TestOnlyTagsYesAndMaybeRsvps:
-    """提醒只 tag 實際回覆「參加」或「待定」的人——不看邀請名單（個別使用者／
-    身分組／@everyone）。這是實際回報過的體驗問題：邀請名單裡有身分組時，
-    身分組是整組一起 tag，Discord 沒有「排除身分組裡特定成員」這種機制，
-    結果變成已經按「不參加」的人還是會被那個身分組通知到，等於白按了。
+class TestTagsEveryoneExceptDeclined:
+    """提醒 tag「參加」「待定」「未回覆」的人，只排除已經明確按「不參加」
+    的人；一律用個別使用者 mention，不用身分組 mention。這是實際回報過的
+    體驗問題：邀請名單裡有身分組時，身分組是整組一起 tag，Discord 沒有
+    「排除身分組裡特定成員」這種機制，結果變成已經按「不參加」的人還是
+    會被那個身分組通知到，等於白按了——改成展開邀請名單（含身分組成員）
+    成個別 ID 再依 RSVP 篩選，就沒有這個問題。
     """
 
     STARTS_AT = PROCESS_NOW + 40 * MINUTE
@@ -307,9 +329,9 @@ class TestOnlyTagsYesAndMaybeRsvps:
         _, kwargs = channel.send.call_args
         assert kwargs["content"] == "<@111>"
 
-    async def test_invited_but_unresponded_user_is_not_tagged(self, db) -> None:
-        """邀請名單裡的人沒回覆就不 tag——催促未回覆的人是 /event ping 的
-        工作，不是自動提醒的工作。"""
+    async def test_invited_but_unresponded_individual_is_tagged(self, db) -> None:
+        """邀請名單裡的個別使用者沒回覆——現在會被當成「未回覆」一起 tag，
+        不用另外打 /event ping 催。"""
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
         )
@@ -320,29 +342,64 @@ class TestOnlyTagsYesAndMaybeRsvps:
         await scheduler._process_reminder(reminder, PROCESS_NOW)
 
         _, kwargs = channel.send.call_args
-        assert kwargs["content"] is None
+        assert kwargs["content"] == "<@111>"
 
-    async def test_invited_role_is_never_mentioned(self, db) -> None:
-        """邀請名單裡的身分組完全不會出現在提醒內容裡——這正是這次修復的
-        bug：身分組 tag 是整組一起通知，沒辦法排除已經按「不參加」的成員。
-        """
+    async def test_unresponded_role_member_is_tagged_individually_not_via_role(
+        self, db
+    ) -> None:
+        """邀請名單裡的身分組展開後，裡面沒回覆的成員一樣要 tag——但是用
+        個別 mention，內容裡完全不會出現身分組 mention。"""
+        guild = _make_guild(roles={777: _role(777, [_member(888)])})
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, role_ids=[777]
         )
-        await repo.upsert_rsvp(event_id, GUILD_ID, 111, "yes")
         reminder = await _due_reminder_for(db, event_id)
 
-        channel = _make_channel()
+        channel = _make_channel(guild=guild)
         scheduler, _ = _make_scheduler(channel=channel)
         await scheduler._process_reminder(reminder, PROCESS_NOW)
 
         _, kwargs = channel.send.call_args
-        assert kwargs["content"] == "<@111>"
+        assert kwargs["content"] == "<@888>"
         assert "&777" not in kwargs["content"]
         assert kwargs["allowed_mentions"].roles == []
 
-    async def test_no_rsvps_sends_no_mention(self, db) -> None:
-        """沒有任何人回覆時該送 None，不是空字串。"""
+    async def test_role_member_who_declined_is_not_tagged(self, db) -> None:
+        """這是原始回報的 bug：身分組成員裡已經按「不參加」的人，不該
+        因為身分組被邀請就還是收到提醒——就算展開身分組也一樣要排除。"""
+        guild = _make_guild(roles={777: _role(777, [_member(999)])})
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, role_ids=[777]
+        )
+        await repo.upsert_rsvp(event_id, GUILD_ID, 999, "no")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel(guild=guild)
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] is None
+
+    async def test_falls_back_to_rsvp_only_when_guild_unavailable(self, db) -> None:
+        """理論上不會發生，但頻道抓不到 guild 時不該炸掉——退回只標
+        實際回覆過參加/待定的人，忽略邀請名單。"""
+        event_id, _ = await _create_event_with_reminder(
+            db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN, user_ids=[111]
+        )
+        await repo.upsert_rsvp(event_id, GUILD_ID, 222, "yes")
+        reminder = await _due_reminder_for(db, event_id)
+
+        channel = _make_channel()
+        channel.guild = None
+        scheduler, _ = _make_scheduler(channel=channel)
+        await scheduler._process_reminder(reminder, PROCESS_NOW)  # 不應拋例外
+
+        _, kwargs = channel.send.call_args
+        assert kwargs["content"] == "<@222>"
+
+    async def test_no_invitees_and_no_rsvps_sends_no_mention(self, db) -> None:
+        """兩邊都沒人時該送 None，不是空字串。"""
         event_id, _ = await _create_event_with_reminder(
             db, starts_at_utc=self.STARTS_AT, offset_min=self.OFFSET_MIN
         )

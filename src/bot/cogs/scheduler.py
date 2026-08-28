@@ -20,6 +20,7 @@ from src.bot.embeds import build_reminder_embed
 from src.db import repo
 from src.db.repo import Row
 from src.domain.reminders import should_skip_overdue_reminder
+from src.domain.rsvp import build_rsvp_summary
 from src.lib.clock import now_ms
 from src.lib.mentions import build_allowed_mentions, build_mention_content
 
@@ -96,17 +97,27 @@ class Scheduler(commands.Cog):
             await repo.mark_reminder_failed(reminder["id"])
             return
 
-        # 提醒只 tag 已經表態「參加」或「待定」的人 —— 不用邀請名單本身
-        # （個別使用者／身分組／@everyone）。身分組是整組一起 tag，Discord
-        # 沒有「身分組成員裡排除特定人」這種機制，只要邀請名單裡有身分組，
-        # 裡面已經按「不參加」的人還是會被那個身分組 tag 通知到，等於白
-        # 按了不參加。改成只看 RSVP 狀態就沒有這個問題：誰能回覆本來就不
-        # 受邀請名單限制（見 domain/rsvp.py），這裡直接依實際回覆結果 tag，
-        # 邀請名單只在建立/催促（/event ping）時才有意義。
+        # 提醒 tag「參加」「待定」「未回覆」的人，只排除已經明確按「不參加」
+        # 的人。一律用個別使用者 mention，不用身分組 mention——身分組是
+        # 整組一起 tag，Discord 沒有「身分組成員裡排除特定人」這種機制，
+        # 邀請名單裡若有身分組、裡面已經按過「不參加」的人還是會被那個
+        # 身分組通知到，等於白按了不參加。改成展開邀請名單（含身分組成員）
+        # 成個別 ID、再依 RSVP 狀態篩選（見 domain/rsvp.build_rsvp_summary），
+        # 兩邊都要靠 Server Members Intent 展開身分組成員，見 client.py。
+        invitees = await repo.list_event_invitees(reminder["event_id"], reminder["guild_id"])
         rsvps = await repo.list_rsvps(reminder["event_id"], reminder["guild_id"])
-        user_ids_list = sorted(
-            {int(r["user_id"]) for r in rsvps if r["status"] in ("yes", "maybe")}
-        )
+
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            summary = build_rsvp_summary(guild, invitees, rsvps)
+            user_ids = set(summary.yes) | set(summary.maybe) | set(summary.no_response)
+        else:
+            # 理論上不會發生（提醒一律綁定伺服器頻道）：抓不到 guild 就沒辦法
+            # 展開身分組/算未回覆名單，退回只標實際回覆過參加/待定的人。
+            log.warning("提醒 %s 的頻道抓不到 guild，無法展開邀請名單", reminder["id"])
+            user_ids = {int(r["user_id"]) for r in rsvps if r["status"] in ("yes", "maybe")}
+
+        user_ids_list = sorted(user_ids)
 
         try:
             await channel.send(
