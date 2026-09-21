@@ -15,7 +15,7 @@ Discord 行事曆排程機器人。自架取代 Sesh / Apollo / Raid-Helper。**
 | Discord | discord.py 2.7 |
 | 資料庫 | Turso（libSQL），官方 `libsql` 驅動 + 手寫 SQL |
 | HTTP | `aiohttp`（discord.py 已帶入，不需額外套件） |
-| 部署 | Render 免費 Web Service + 外部 cron 保活 |
+| 部署 | Oracle Cloud Always Free VM + systemd（見「首次設定」；Render 免費 Web Service + 外部 cron 保活是備選） |
 
 沒有 ORM —— schema 只有 9 張小表，全部走原生 SQL。原本評估的 `sqlalchemy-libsql`
 其最新版仍依賴已棄用的 `libsql-experimental`，故不採用。
@@ -104,28 +104,111 @@ turso db tokens create dc-schedule       # → TURSO_AUTH_TOKEN
 **不論哪種方式，schema 都不必手動建立** —— bot 每次啟動會自動套用
 `src/db/migrations/*.sql`，9 張表與索引會自己建好。
 
-### 3. Render
+### 3. 部署——自架 Always Free VM（推薦，永久免費、不休眠）
+
+Render 免費方案有兩個先天限制：閒置 15 分鐘就休眠（要另外搭保活 cron 撐著，
+見下方「選擇 Render」）、以及免費方案共用 IP，偶爾會被其他租戶連坐（實際
+遇過一次 Discord 回傳「全域限速封鎖」，事後排查跟自己的請求頻率無關，
+研判是共用 IP 被別的租戶拖累）。改用雲端服務商的「Always Free」永久免費
+VM 就沒有這兩個問題——24 小時不休眠，代價是要自己顧一台 Linux VM（SSH、
+systemd、防火牆），沒有 Render 那種按一鍵部署的體驗。兩個都是真永久免費、
+不是試用，帳號審核**看運氣**，哪個過就用哪個：
+
+| | Oracle Cloud Always Free | Google Cloud `e2-micro` Always Free |
+|---|---|---|
+| 規格 | 最高 4 OCPU／24GB RAM（ARM） | 1 vCPU（共享）／1GB RAM |
+| 區域 | 不限 | 限 us-west1／us-central1／us-east1 三選一 |
+| 對外流量 | 10TB/月 | 1GB/月（這個 bot 用量小，正常情況夠用） |
+| 帳號審核 | 社群反應偏嚴、常被拒 | 相對容易過 |
+| 特有風險 | 連續 7 天 CPU 使用率過低會被回收（先寄信警告，登入按「保留」即可） | 同一帳單帳戶只有第一台 e2-micro 算免費，多開一台就開始收費 |
+
+兩者都需要信用卡驗證身分（不會真的扣款），Oracle 卡關的話換 Google 試，
+兩邊帳號審核邏輯是獨立的。
+
+#### 選項 A：Oracle Cloud Always Free
+
+1. 到 [Oracle Cloud Free Tier](https://www.oracle.com/cloud/free/) 申請帳號
+2. 建立運算執行個體：Shape 選 **Ampere（ARM）→ VM.Standard.A1.Flex**，
+   OS 選 Ubuntu，OCPU／記憶體依需求調整（這個 bot 用 1 OCPU／6GB 綽綽有餘）
+3. SSH 進去，照下方「共通安裝步驟」
+
+VM 是 ARM 架構（aarch64）：Python 本身沒問題，但 `libsql` 這類 C extension
+套件要留意有沒有現成的 aarch64 wheel——沒有的話 `pip install` 會退回原始碼
+編譯，失敗率較高，部署前先實際跑一次 `pip install -r requirements.txt`
+確認過得去。
+
+#### 選項 B：Google Cloud `e2-micro` Always Free
+
+1. 到 [console.cloud.google.com](https://console.cloud.google.com) 建立帳號、
+   建一個新專案
+2. 左側選單 → Compute Engine → 第一次使用會提示啟用 API（需要先綁定帳單
+   帳戶，只要維持在 Always Free 額度內就不會扣款）
+3. 建立執行個體：
+   - **區域務必選 us-west1／us-central1／us-east1 其中一個**——其他區域
+     不算 Always Free，會直接開始計費
+   - 機器類型選 **e2-micro**
+   - 開機磁碟選 Ubuntu（例如 24.04 LTS），磁碟大小 ≤ 30GB（Always Free
+     額度上限）
+   - 防火牆選項都不用勾——這個 bot 只需要對外連線，不需要任何人從外面
+     連進來
+4. 建好後直接在主控台點執行個體旁的 **SSH** 按鈕（瀏覽器內建終端機，不用
+   自己管理金鑰），照下方「共通安裝步驟」
+
+⚠️ **同一個帳單帳戶下，Always Free 只包含第一台符合資格的 `e2-micro`**——
+不要手滑建第二台，會直接開始計費。
+
+#### 共通安裝步驟
+
+```bash
+# Ubuntu 24.04 LTS 預設帶 Python 3.12，如果 apt 裡找不到 python3.13，
+# 先加 deadsnakes PPA：
+# sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update
+sudo apt update && sudo apt install -y python3.13 python3.13-venv git
+git clone <你的 repo URL>
+cd dc_schedule_helper
+python3.13 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env   # 填入 DISCORD_TOKEN 等機密值（見上面「1. Discord 應用程式」「2. Turso」）
+```
+
+用 systemd 顧 process，開機自動啟動、當掉自動重啟（等同 Render 免費幫你
+做的事）：
+
+```bash
+sudo cp deploy/dc-schedule.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dc-schedule
+journalctl -u dc-schedule -f   # 看即時 log
+```
+
+`deploy/dc-schedule.service` 裡的路徑（`WorkingDirectory`／`ExecStart`／
+`User`）預設抓 `/home/ubuntu/...`，跟實際部署路徑不同要記得改（GCP 的
+Ubuntu 映像檔預設使用者名稱通常也是你 Google 帳號的名稱，不一定是
+`ubuntu`，SSH 進去後用 `whoami` 確認）。
+
+### 4. 保活設定——只有 Render 需要
+
+VM（Oracle／GCP）不會像 Render 免費方案那樣閒置休眠，`/healthz`／`/readyz`
+保留下來純粹給你自己（或 UptimeRobot 之類的服務）監控用，不是必要條件。
+選擇下面「Render」路徑才需要做這一步。
+
+### 選擇 Render（願意付費／想要一鍵部署體驗）
 
 1. 把這個 repo 推到 GitHub
 2. Render → New → Blueprint → 選這個 repo（會讀 [render.yaml](render.yaml)）
 3. 在 Dashboard 填入機密環境變數：`DISCORD_TOKEN`、`DISCORD_APP_ID`、
    `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`，以及選填的 `DEV_GUILD_ID`
 4. Deploy
+5. **保活（免費方案必做）**：Render 免費 Web Service 閒置 15 分鐘就休眠，
+   休眠會切斷 Discord gateway 連線，冷啟動要約 1 分鐘。到
+   [cron-job.org](https://cron-job.org)（免費）建立一個任務：
+   - URL：`https://<你的服務>.onrender.com/healthz`
+   - 間隔：每 10 分鐘（間隔愈短，緩衝愈大，愈不容易被單次失敗的 ping 拖到睡著）
 
-### 4. 保活設定（**必做，不是選配**）
-
-Render 免費 Web Service 閒置 15 分鐘就休眠，休眠會切斷 Discord gateway 連線，
-冷啟動要約 1 分鐘。到 [cron-job.org](https://cron-job.org)（免費）建立一個任務：
-
-- URL：`https://<你的服務>.onrender.com/healthz`
-- 間隔：每 10 分鐘
-
-### ⚠️ 免費額度沒有餘裕
-
-Render 免費方案是 **750 instance hours / 月 / workspace**，而全月常駐 31 天 = 744 小時。
-
-- **同一個 workspace 不能再有其他免費服務**，否則會超額被停
-- 若覺得偶爾斷線太煩，升級 Background Worker（$7/mo）即可拿掉保活 hack
+⚠️ **免費額度沒有餘裕**：Render 免費方案是 **750 instance hours / 月 /
+workspace**，而全月常駐 31 天 = 744 小時，同一個 workspace 不能再有其他
+免費服務，否則會超額被停。若覺得偶爾斷線太煩，升級 Background Worker
+（$7/mo）即可拿掉保活 hack。
 
 ---
 
@@ -133,7 +216,7 @@ Render 免費方案是 **750 instance hours / 月 / workspace**，而全月常�
 
 | 路徑 | 用途 |
 |------|------|
-| `/healthz` | 只證明進程活著，不碰 DB。給 Render health check 與保活 cron 用（啟動初期 gateway 還沒連上時也要回 200，否則 Render 會誤判 deploy 失敗） |
+| `/healthz` | 只證明進程活著，不碰 DB。部署在 Render 時是保活 cron／health check 的必要端點；部署在 VM 上則純粹是可選的監控端點（啟動初期 gateway 還沒連上時也要回 200，否則 Render 會誤判 deploy 失敗） |
 | `/readyz` | 深度檢查：gateway 連線狀態 + DB 往返延遲。排查問題用，異常時回 503 |
 
 ---

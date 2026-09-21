@@ -1,0 +1,17 @@
+[Unit]
+Description=dc_schedule Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 依實際部署路徑調整——步驟見 README.md「部署（Oracle Cloud Always Free）」。
+WorkingDirectory=/home/ubuntu/dc_schedule_helper
+ExecStart=/home/ubuntu/dc_schedule_helper/.venv/bin/python -m src.main
+Restart=on-failure
+RestartSec=5
+# .env 走 python-dotenv 讀取（見 src/config.py），不用在這裡重複列環境變數。
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target
