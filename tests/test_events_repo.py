@@ -227,7 +227,7 @@ class TestCancelEvent:
 
 
 class TestUpdateEvent:
-    async def test_overwrites_all_four_fields(self, db) -> None:
+    async def test_overwrites_all_five_fields(self, db) -> None:
         event_id = await _create(
             db, title="舊標題", starts_at_utc=NOW + HOUR, location="舊地點"
         )
@@ -236,6 +236,7 @@ class TestUpdateEvent:
             GUILD_A,
             title="新標題",
             starts_at_utc=NOW + 2 * HOUR,
+            ends_at_utc=NOW + 3 * HOUR,
             location="新地點",
             description="新內容",
         )
@@ -244,6 +245,7 @@ class TestUpdateEvent:
         row = await repo.owned_event(event_id, GUILD_A)
         assert row["title"] == "新標題"
         assert row["starts_at_utc"] == NOW + 2 * HOUR
+        assert row["ends_at_utc"] == NOW + 3 * HOUR
         assert row["location"] == "新地點"
         assert row["description"] == "新內容"
 
@@ -254,6 +256,7 @@ class TestUpdateEvent:
             GUILD_A,
             title="標題",
             starts_at_utc=NOW + HOUR,
+            ends_at_utc=None,
             location=None,
             description=None,
         )
@@ -261,21 +264,33 @@ class TestUpdateEvent:
         assert row["location"] is None
         assert row["description"] is None
 
-    async def test_does_not_touch_ends_at_utc(self, db) -> None:
-        """這輪不開放編輯結束時間，維持原值。"""
+    async def test_updates_ends_at_utc(self, db) -> None:
+        """回報過的 bug：編輯活動時結束時間改不動，維持原值——現在應該
+        跟標題/時間/地點/內容一樣是整批覆寫。"""
         event_id = await _create(db, ends_at_utc=NOW + 3 * HOUR)
         await repo.update_event(
             event_id, GUILD_A, title="標題", starts_at_utc=NOW + HOUR,
-            location=None, description=None,
+            ends_at_utc=NOW + 5 * HOUR, location=None, description=None,
         )
         row = await repo.owned_event(event_id, GUILD_A)
-        assert row["ends_at_utc"] == NOW + 3 * HOUR
+        assert row["ends_at_utc"] == NOW + 5 * HOUR
+
+    async def test_can_clear_ends_at_utc(self, db) -> None:
+        """編輯時把時長欄位留白，等同清掉結束時間（跟 /event create 不填
+        duration 的語意一致）。"""
+        event_id = await _create(db, ends_at_utc=NOW + 3 * HOUR)
+        await repo.update_event(
+            event_id, GUILD_A, title="標題", starts_at_utc=NOW + HOUR,
+            ends_at_utc=None, location=None, description=None,
+        )
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["ends_at_utc"] is None
 
     async def test_refuses_cross_guild_update(self, db) -> None:
         event_id = await _create(db, guild_id=GUILD_A, title="原標題")
         ok = await repo.update_event(
             event_id, GUILD_B, title="被改的標題", starts_at_utc=NOW + HOUR,
-            location=None, description=None,
+            ends_at_utc=None, location=None, description=None,
         )
         assert ok is False
         row = await repo.owned_event(event_id, GUILD_A)
@@ -283,7 +298,8 @@ class TestUpdateEvent:
 
     async def test_returns_false_for_nonexistent_event(self, db) -> None:
         ok = await repo.update_event(
-            "nope", GUILD_A, title="x", starts_at_utc=NOW, location=None, description=None
+            "nope", GUILD_A, title="x", starts_at_utc=NOW,
+            ends_at_utc=None, location=None, description=None,
         )
         assert ok is False
 

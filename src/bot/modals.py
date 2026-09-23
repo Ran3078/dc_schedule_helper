@@ -169,9 +169,21 @@ class EventDescriptionModal(discord.ui.Modal, title="活動內容（選填）"):
             await interaction.response.send_message(message, ephemeral=True)
 
 
+def _format_duration_minutes(total_minutes: int) -> str:
+    """把分鐘數格式化回 `parse_duration_minutes` 認得的字串（"2h"／"90m"／
+    "1h30m"），用來預先帶入 `EventEditModal` 的時長欄位預設值。"""
+    hours, minutes = divmod(total_minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return "".join(parts)
+
+
 class EventEditModal(discord.ui.Modal, title="編輯活動"):
-    """`/event edit` 用：四個欄位（標題/時間/地點/內容）全部用目前的值預先
-    帶好——`default=` 是建構參數，不是建構後才賦值，不會踩到
+    """`/event edit` 用：五個欄位（標題/時間/時長/地點/內容）全部用目前的值
+    預先帶好——`default=` 是建構參數，不是建構後才賦值，不會踩到
     `modals_poll.PollDetailsModal` 已經記過的 `.label` deprecation 那個坑
     （這裡也沒有動態換 label，純粹是每個 instance 的 default 值不同，本來
     就得在 `__init__` 動態建）。
@@ -179,6 +191,10 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
     使用者沒改某個欄位、原樣送出時，`time_input` 的 `default` 是用
     `lib/timeparse.parse_datetime` 認得的格式（`%Y-%m-%d %H:%M`）格式化的，
     重新解析回去會是同一個 epoch，不會因為「沒改」而變成一個新的時間。
+    `duration_input` 同理，用 `_format_duration_minutes` 把現有的
+    `ends_at_utc - starts_at_utc` 格式化回 `parse_duration_minutes` 認得的
+    字串；活動原本沒有 `ends_at_utc` 就留白（跟 `/event create` 不填
+    duration 的語意一致）。
     """
 
     def __init__(self, *, event: Row, event_id: str, guild_id: int, tz: str) -> None:
@@ -194,6 +210,12 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         start_text = datetime.fromtimestamp(
             event["starts_at_utc"] / 1000, tz=zone
         ).strftime("%Y-%m-%d %H:%M")
+
+        duration_text = None
+        if event.get("ends_at_utc"):
+            duration_minutes = (event["ends_at_utc"] - event["starts_at_utc"]) // 60_000
+            if duration_minutes > 0:
+                duration_text = _format_duration_minutes(duration_minutes)
 
         self.title_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
             label="標題",
@@ -212,6 +234,15 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
             placeholder="2026-08-01 20:00",
         )
         self.add_item(self.time_input)
+
+        self.duration_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
+            label="時長（選填）",
+            style=discord.TextStyle.short,
+            required=False,
+            default=duration_text,
+            placeholder="2h、90m、1h30m",
+        )
+        self.add_item(self.duration_input)
 
         self.location_input: discord.ui.TextInput[EventEditModal] = discord.ui.TextInput(
             label="地點（選填）",
@@ -235,7 +266,7 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         from src.bot.native_events import sync_edit
         from src.db import repo
         from src.domain.rsvp import build_rsvp_summary
-        from src.lib.timeparse import TimeParseError, parse_datetime
+        from src.lib.timeparse import TimeParseError, parse_datetime, parse_duration_minutes
 
         title = self.title_input.value.strip()
         if not title:
@@ -248,6 +279,19 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
+        ends_at_utc: int | None = None
+        duration_text = self.duration_input.value.strip()
+        if duration_text:
+            try:
+                duration_minutes = parse_duration_minutes(duration_text)
+            except TimeParseError as exc:
+                await interaction.response.send_message(str(exc), ephemeral=True)
+                return
+            if duration_minutes <= 0:
+                await interaction.response.send_message("時長必須大於 0。", ephemeral=True)
+                return
+            ends_at_utc = starts_at_utc + duration_minutes * 60_000
+
         location = self.location_input.value.strip() or None
         description = self.description_input.value.strip() or None
 
@@ -256,6 +300,7 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
             self.guild_id,
             title=title,
             starts_at_utc=starts_at_utc,
+            ends_at_utc=ends_at_utc,
             location=location,
             description=description,
         )

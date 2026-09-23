@@ -430,21 +430,30 @@ async def update_event(
     *,
     title: str,
     starts_at_utc: int,
+    ends_at_utc: int | None,
     location: str | None,
     description: str | None,
 ) -> bool:
-    """`/event edit` 用：覆寫標題/時間/地點/內容這四欄。
+    """`/event edit` 用：覆寫標題/時間/結束時間/地點/內容這五欄。
 
-    `EventEditModal` 的欄位一律用目前的值預先帶好，送出時四個欄位都會有
+    `EventEditModal` 的欄位一律用目前的值預先帶好，送出時每個欄位都會有
     值（不管使用者實際改了哪個），所以這裡是整批覆寫，不是「只更新有變的
     欄位」那種部分更新——比 `update_guild_settings` 的動態 SET 簡單，不需要
-    分辨「沒給」跟「給了 None」。`ends_at_utc` 這輪不開放編輯（`PLAN.md`
-    原始設計只講標題/時間/地點/內容），維持不動。
+    分辨「沒給」跟「給了 None」。
     """
     rowcount = await engine.execute(
-        "UPDATE events SET title = ?, starts_at_utc = ?, location = ?, "
+        "UPDATE events SET title = ?, starts_at_utc = ?, ends_at_utc = ?, location = ?, "
         "description = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
-        (title, starts_at_utc, location, description, now_ms(), event_id, str(guild_id)),
+        (
+            title,
+            starts_at_utc,
+            ends_at_utc,
+            location,
+            description,
+            now_ms(),
+            event_id,
+            str(guild_id),
+        ),
     )
     return rowcount > 0
 
