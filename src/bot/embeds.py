@@ -214,6 +214,25 @@ def build_reminder_embed(reminder: Row) -> discord.Embed:
     )
 
 
+def build_countdown_embed(countdown: Row, days_left: int) -> discord.Embed:
+    """每天發送的倒數卡片。`days_left` 由呼叫端算好傳入
+    （`domain.countdown.days_remaining`）——embed 只管顯示，不重算。"""
+    if days_left > 0:
+        headline = f"⏳ 還剩 **{days_left}** 天"
+    else:
+        headline = "🎉 就是今天！"
+
+    description = f"{headline}\n{discord_timestamp(countdown['target_date_utc'], 'D')}"
+    if countdown.get("content"):
+        description += f"\n\n{countdown['content']}"
+
+    return discord.Embed(
+        title=f"📆 {countdown['title']}",
+        description=description,
+        colour=discord.Colour.gold(),
+    )
+
+
 def build_poll_embed(poll: Row, options: list[Row], votes: list[Row]) -> discord.Embed:
     """投票卡片：每個選項一個欄位顯示票數，非匿名模式另外列出是誰投的。
 

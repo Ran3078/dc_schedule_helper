@@ -890,3 +890,86 @@ async def close_poll(poll_id: str, guild_id: int | str) -> bool:
         (poll_id, str(guild_id)),
     )
     return rowcount > 0
+
+
+# ── 倒數提醒 ──────────────────────────────────────────────────────────────
+
+
+async def create_countdown(
+    *,
+    countdown_id: str,
+    guild_id: int | str,
+    channel_id: int | str,
+    creator_id: int | str,
+    title: str,
+    content: str | None,
+    target_date_utc: int,
+    tz: str,
+    send_hour: int,
+    send_minute: int,
+) -> None:
+    now = now_ms()
+    await engine.execute(
+        "INSERT INTO countdowns (id, guild_id, channel_id, creator_id, title, content, "
+        "target_date_utc, tz, send_hour, send_minute, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        (
+            countdown_id,
+            str(guild_id),
+            str(channel_id),
+            str(creator_id),
+            title,
+            content,
+            target_date_utc,
+            tz,
+            send_hour,
+            send_minute,
+            now,
+            now,
+        ),
+    )
+
+
+async def owned_countdown(countdown_id: str, guild_id: int | str) -> Row | None:
+    return await engine.query_one(
+        "SELECT * FROM countdowns WHERE id = ? AND guild_id = ?",
+        (countdown_id, str(guild_id)),
+    )
+
+
+async def list_active_countdowns_in_guild(guild_id: int | str) -> list[Row]:
+    """`/countdown list` 用：這個伺服器目前還在倒數中的清單，依目標日期排序。"""
+    return await engine.query_all(
+        "SELECT * FROM countdowns WHERE guild_id = ? AND status = 'active' "
+        "ORDER BY target_date_utc ASC",
+        (str(guild_id),),
+    )
+
+
+async def cancel_countdown(countdown_id: str, guild_id: int | str) -> bool:
+    """樂觀鎖：只能從 'active' 轉 'cancelled'，已經結束/取消過的重複取消回傳 False。"""
+    rowcount = await engine.execute(
+        "UPDATE countdowns SET status = 'cancelled', updated_at = ? "
+        "WHERE id = ? AND guild_id = ? AND status = 'active'",
+        (now_ms(), countdown_id, str(guild_id)),
+    )
+    return rowcount > 0
+
+
+async def list_active_countdowns() -> list[Row]:
+    """任務迴圈用：一次撈出所有伺服器還在倒數中的項目。這是本檔案開頭
+    紀律第 5 點那個例外（系統層級背景工作，不是代表任何特定伺服器的使用者
+    操作），理由同 `list_due_reminders()`／`list_guilds_with_weekly_digest_enabled()`。
+    """
+    return await engine.query_all("SELECT * FROM countdowns WHERE status = 'active'")
+
+
+async def mark_countdown_sent(countdown_id: str, sent_at: int, *, completed: bool) -> None:
+    """記錄這次發送，`completed=True` 時一併把狀態轉成 'completed'——目標
+    日期當天發送完就自動停止，不會變成負數一直發（見這輪確認過的產品決策）。
+    """
+    status_clause = ", status = 'completed'" if completed else ""
+    await engine.execute(
+        f"UPDATE countdowns SET last_sent_utc = ?, updated_at = ?{status_clause} WHERE id = ?",
+        (sent_at, now_ms(), countdown_id),
+    )

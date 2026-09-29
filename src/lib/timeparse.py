@@ -93,6 +93,74 @@ def parse_datetime(text: str, tz_name: str, *, now: datetime | None = None) -> i
     raise TimeParseError(f"無法解析時間「{text}」。\n{SUPPORTED_FORMATS_HELP}")
 
 
+_FULL_DATE_ONLY_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
+_MONTH_DAY_ONLY_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})$")
+
+SUPPORTED_DATE_FORMATS_HELP = (
+    "支援的日期格式：\n"
+    "・2027-06-15（含年份）\n"
+    "・2027/06/15\n"
+    "・6/15（省略年份，用今年；若已過則自動抓明年）\n"
+    "・6-15"
+)
+
+
+def parse_date(text: str, tz_name: str, *, now: datetime | None = None) -> int:
+    """把使用者輸入的日期字串解析成「當天 00:00」的 UTC epoch 毫秒（`countdown`
+    功能用：只在意日期，不需要時分）。
+
+    省略年份時的「已經過去」判斷跟 `parse_datetime` 不同——這裡直接比較
+    日期本身，不是加減 5 分鐘緩衝：`parse_datetime` 的緩衝是為了處理「現在
+    正好是那個時刻」的邊界情況，但日期沒有這種毫秒級的邊界問題，今天這個
+    日期本身永遠算「還沒過去」，不該被捲到明年。
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        raise TimeParseError(f"日期不能是空的。\n{SUPPORTED_DATE_FORMATS_HELP}")
+
+    tz = _resolve_tz(tz_name)
+    reference = now.astimezone(tz) if now is not None else datetime.now(tz)
+
+    for fmt in _FULL_DATE_ONLY_FORMATS:
+        try:
+            naive = datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+        localized = naive.replace(tzinfo=tz)
+        return int(localized.timestamp() * 1000)
+
+    match = _MONTH_DAY_ONLY_RE.match(cleaned)
+    if match:
+        month, day = (int(g) for g in match.groups())
+        try:
+            candidate = datetime(reference.year, month, day, tzinfo=tz)
+        except ValueError as exc:
+            raise TimeParseError(f"「{text}」不是合法的日期：{exc}") from exc
+
+        if candidate.date() < reference.date():
+            candidate = candidate.replace(year=reference.year + 1)
+        return int(candidate.timestamp() * 1000)
+
+    raise TimeParseError(f"無法解析日期「{text}」。\n{SUPPORTED_DATE_FORMATS_HELP}")
+
+
+_TIME_OF_DAY_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def parse_time_of_day(text: str) -> tuple[int, int]:
+    """解析「每天幾點發送」，例如 "09:00"、"21:30"。回傳 (hour, minute)，
+    24 小時制。`countdown` 功能用：每個倒數各自的每天發送時間。
+    """
+    match = _TIME_OF_DAY_RE.match(text.strip())
+    if not match:
+        raise TimeParseError(f"無法解析時間「{text}」，格式要是 HH:MM，例如 09:00")
+
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        raise TimeParseError(f"「{text}」不是合法的時間，小時要在 0–23、分鐘要在 0–59")
+    return hour, minute
+
+
 _DURATION_RE = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*$", re.IGNORECASE)
 
 

@@ -14,8 +14,10 @@ import pytest
 from src.lib.timeparse import (
     TimeParseError,
     discord_timestamp,
+    parse_date,
     parse_datetime,
     parse_duration_minutes,
+    parse_time_of_day,
 )
 
 TPE = "Asia/Taipei"
@@ -128,6 +130,78 @@ class TestDurationParsing:
     def test_rejects_garbage(self) -> None:
         with pytest.raises(TimeParseError, match="1h30m"):
             parse_duration_minutes("兩小時")
+
+
+class TestDateParsing:
+    """`countdown` 功能用：只有日期、沒有時分。跟 `parse_datetime` 的省略年份
+    邏輯不同——這裡「今天」永遠算「還沒過去」，不用 5 分鐘緩衝（見
+    parse_date 的說明）。
+    """
+
+    def test_dash_format(self) -> None:
+        ms = parse_date("2027-06-15", TPE, now=NOW)
+        expected = datetime(2027, 6, 15, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_slash_format(self) -> None:
+        ms = parse_date("2027/06/15", TPE, now=NOW)
+        expected = datetime(2027, 6, 15, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_month_day_future_date_stays_this_year(self) -> None:
+        ms = parse_date("8/1", TPE, now=NOW)
+        expected = datetime(2026, 8, 1, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_month_day_past_date_rolls_to_next_year(self) -> None:
+        """現在是 7/30，1/1 已經過了，捲到明年。"""
+        ms = parse_date("1/1", TPE, now=NOW)
+        expected = datetime(2027, 1, 1, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_today_is_not_rolled_to_next_year(self) -> None:
+        """今天這個日期本身永遠算「還沒過去」——跟 parse_datetime 用 5 分鐘
+        緩衝不同，這裡直接比日期，今天絕對不該被捲到明年。"""
+        ms = parse_date("7/30", TPE, now=NOW)
+        expected = datetime(2026, 7, 30, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_dash_month_day_format(self) -> None:
+        ms = parse_date("8-1", TPE, now=NOW)
+        expected = datetime(2026, 8, 1, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_rejects_empty_string(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_date("   ", TPE, now=NOW)
+
+    def test_rejects_garbage(self) -> None:
+        with pytest.raises(TimeParseError, match="無法解析"):
+            parse_date("下個月", TPE, now=NOW)
+
+    def test_rejects_impossible_date(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_date("2027-02-30", TPE, now=NOW)
+
+
+class TestTimeOfDayParsing:
+    def test_parses_hour_and_minute(self) -> None:
+        assert parse_time_of_day("09:00") == (9, 0)
+
+    def test_parses_late_hour(self) -> None:
+        assert parse_time_of_day("23:59") == (23, 59)
+
+    def test_rejects_hour_out_of_range(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_time_of_day("24:00")
+
+    def test_rejects_minute_out_of_range(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_time_of_day("09:60")
+
+    def test_rejects_garbage(self) -> None:
+        with pytest.raises(TimeParseError, match="HH:MM"):
+            parse_time_of_day("早上九點")
 
 
 class TestDiscordTimestamp:
