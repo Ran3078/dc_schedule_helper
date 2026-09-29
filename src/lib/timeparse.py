@@ -13,7 +13,7 @@ MVP 只收固定格式的時間輸入（自然語言解析留待 Phase 2，見 P
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # 有年份的格式優先比對，避免 "2026-08-01" 被省略年份的規則誤吃。
@@ -144,21 +144,48 @@ def parse_date(text: str, tz_name: str, *, now: datetime | None = None) -> int:
     raise TimeParseError(f"無法解析日期「{text}」。\n{SUPPORTED_DATE_FORMATS_HELP}")
 
 
-_TIME_OF_DAY_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_DAYS_FROM_NOW_RE = re.compile(r"^\d+$")
+
+SUPPORTED_TARGET_DATE_HELP = (
+    f"{SUPPORTED_DATE_FORMATS_HELP}\n"
+    "・純數字代表「從今天算起還有幾天」，例如 500（懶得算確切日期時可以直接打天數）"
+)
 
 
-def parse_time_of_day(text: str) -> tuple[int, int]:
-    """解析「每天幾點發送」，例如 "09:00"、"21:30"。回傳 (hour, minute)，
-    24 小時制。`countdown` 功能用：每個倒數各自的每天發送時間。
+def parse_target_date(text: str, tz_name: str, *, now: datetime | None = None) -> int:
+    """`countdown` 功能的目標日期輸入：可以是 `parse_date` 認得的日期字串，
+    也可以是純數字代表「從今天算起還有幾天」——使用者常常懶得去算確切的
+    目標日期（例如退伍日），直接打「還剩幾天」更省事，兩種輸入用同一個
+    欄位收，用「整段是不是純數字」分流，不需要使用者自己選格式。
     """
-    match = _TIME_OF_DAY_RE.match(text.strip())
-    if not match:
-        raise TimeParseError(f"無法解析時間「{text}」，格式要是 HH:MM，例如 09:00")
+    cleaned = text.strip()
+    if not cleaned:
+        raise TimeParseError(f"日期不能是空的。\n{SUPPORTED_TARGET_DATE_HELP}")
 
-    hour, minute = int(match.group(1)), int(match.group(2))
-    if not (0 <= hour < 24 and 0 <= minute < 60):
-        raise TimeParseError(f"「{text}」不是合法的時間，小時要在 0–23、分鐘要在 0–59")
-    return hour, minute
+    if _DAYS_FROM_NOW_RE.match(cleaned):
+        days = int(cleaned)
+        tz = _resolve_tz(tz_name)
+        reference = now.astimezone(tz) if now is not None else datetime.now(tz)
+        today_midnight = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+        target = today_midnight + timedelta(days=days)
+        return int(target.timestamp() * 1000)
+
+    return parse_date(cleaned, tz_name, now=now)
+
+
+def parse_day_count(text: str) -> int:
+    """`countdown` 正數模式用：「目前已經第幾天」的純數字輸入，例如
+    `12` 代表建立當下就是第 12 天。只回傳驗證過的天數本身——換算成錨點
+    日期（`今天 − N 天`）是呼叫端的事，因為那需要時區資訊，這裡不用管。
+    """
+    cleaned = text.strip()
+    if not cleaned or not cleaned.isdigit():
+        raise TimeParseError(f"「{text}」不是合法的天數，要打正整數，例如 12")
+
+    days = int(cleaned)
+    if days <= 0:
+        raise TimeParseError("天數必須大於 0。")
+    return days
 
 
 _DURATION_RE = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*$", re.IGNORECASE)

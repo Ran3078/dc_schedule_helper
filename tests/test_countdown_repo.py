@@ -45,6 +45,21 @@ class TestCreateAndOwnedCountdown:
         assert row["status"] == "active"
         assert row["last_sent_utc"] is None
 
+    async def test_mode_and_suffix_default_to_countdown_and_none(self, db) -> None:
+        """既有呼叫端（沒帶 mode/suffix）建立出來的行為要跟改動前完全一致。"""
+        countdown_id = await _create(db)
+        row = await repo.owned_countdown(countdown_id, GUILD_A)
+        assert row["mode"] == "countdown"
+        assert row["suffix"] is None
+
+    async def test_stores_countup_mode_and_suffix(self, db) -> None:
+        countdown_id = await _create(
+            db, title="沒有小名的日子第", mode="countup", suffix="天"
+        )
+        row = await repo.owned_countdown(countdown_id, GUILD_A)
+        assert row["mode"] == "countup"
+        assert row["suffix"] == "天"
+
     async def test_cannot_read_from_other_guild(self, db) -> None:
         countdown_id = await _create(db, guild_id=GUILD_A)
         assert await repo.owned_countdown(countdown_id, GUILD_B) is None

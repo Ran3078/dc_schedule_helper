@@ -337,16 +337,17 @@ _COUNTDOWN_MAX_TITLE_LENGTH = 200
 
 
 class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
-    """`@提及選單`用：跟 `/countdown create` 是同一套驗證/建立邏輯，這裡
-    重複一份而非呼叫 `cogs.countdown.Countdown._create_impl`——理由同
-    `QuickPollModal` 對 `Polls` 的作法：只有兩個呼叫端（指令本身／這個
-    Modal），還沒到「複製第三次」抽共用函式的門檻（見 cogs/_shared.py
-    對 `validate_event_draft` 的說明）。
+    """`@提及選單`用：跟 `/countdown create` 是同一套驗證邏輯，這裡重複一份
+    而非呼叫 `cogs.countdown.Countdown._create_impl`——理由同 `QuickPollModal`
+    對 `Polls` 的作法：只有兩個呼叫端（指令本身／這個 Modal），還沒到
+    「複製第三次」抽共用函式的門檻（見 cogs/_shared.py 對
+    `validate_event_draft` 的說明）。
 
-    日期／時間這裡維持文字輸入，不像 `QuickEventModal` 刻意避開打字改用
-    `DateTimePickerView`——倒數的日期／每天發送時間格式比事件的完整日期
-    時間簡單很多（純日期、純 HH:MM），打錯的機率低很多，跟 `/countdown
-    create` 保持同一種輸入方式也比較好理解。頻道固定發到目前這個頻道
+    這個 Modal**不解析**日期/天數欄位（`value_input`）——Modal 送出當下
+    還不知道使用者要選倒數還是正數，同一段文字在兩種模式下解析方式不同
+    （見 `views_countdown.CountdownModeChoiceView` 的說明），驗證通過後
+    先開那個模式選擇 View，選完模式才真正解析、接著開
+    `CountdownTimePickerView` 挑每天發送時間。頻道固定發到目前這個頻道
     （或伺服器設定的公告頻道，見 `_resolve_announce_channel`），不像
     `/countdown create` 能另外指定頻道——按鈕觸發的情境沒有頻道選擇器
     這種元件可以塞進 Modal，保持跟其他快速建立 Modal 一致。
@@ -356,23 +357,28 @@ class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
         super().__init__()
 
         self.title_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
-            label="倒數標題", style=discord.TextStyle.short, required=True, max_length=200
+            label="訊息前綴，例如「退伍倒數」",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=200,
         )
         self.add_item(self.title_input)
 
-        self.date_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
-            label="目標日期", style=discord.TextStyle.short, required=True,
-            placeholder="2027-06-15",
-        )
-        self.add_item(self.date_input)
-
-        self.time_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
-            label="每天發送時間（24 小時制）",
+        self.value_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
+            label="倒數：目標日期或還剩幾天；正數：目前第幾天",
             style=discord.TextStyle.short,
             required=True,
-            placeholder="09:00",
+            placeholder="2027-06-15、500，或 12",
         )
-        self.add_item(self.time_input)
+        self.add_item(self.value_input)
+
+        self.suffix_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
+            label="接在天數後面的文字（選填）",
+            style=discord.TextStyle.short,
+            required=False,
+            placeholder="天",
+        )
+        self.add_item(self.suffix_input)
 
         self.content_input: discord.ui.TextInput[QuickCountdownModal] = discord.ui.TextInput(
             label="內容（選填）",
@@ -383,14 +389,9 @@ class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
         self.add_item(self.content_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
         from src.bot.cogs._shared import is_organizer, resolve_user_tz
+        from src.bot.views_countdown import CountdownModeChoiceView
         from src.db import repo
-        from src.domain.countdown import days_remaining
-        from src.lib.ids import new_id
-        from src.lib.timeparse import TimeParseError, parse_date, parse_time_of_day
 
         assert interaction.guild_id is not None  # guild_only() 保證（見 MentionMenuView）
 
@@ -416,48 +417,25 @@ class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
             return
 
         tz = await resolve_user_tz(interaction.client, interaction.guild_id, interaction.user.id)
-
-        try:
-            target_date_utc = parse_date(self.date_input.value, tz)
-        except TimeParseError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-
-        try:
-            send_hour, send_minute = parse_time_of_day(self.time_input.value)
-        except TimeParseError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-
         channel = await _resolve_announce_channel(interaction, guild_settings)
+        channel_id = channel.id if channel is not None else interaction.channel_id
         content = self.content_input.value.strip() or None
-        countdown_id = new_id()
-        await repo.create_countdown(
-            countdown_id=countdown_id,
+        suffix = self.suffix_input.value.strip() or None
+
+        mode_choice = CountdownModeChoiceView(
             guild_id=interaction.guild_id,
-            channel_id=channel.id if channel is not None else interaction.channel_id,
+            channel_id=channel_id,
             creator_id=interaction.user.id,
             title=title,
+            raw_value=self.value_input.value,
+            suffix=suffix,
             content=content,
-            target_date_utc=target_date_utc,
             tz=tz,
-            send_hour=send_hour,
-            send_minute=send_minute,
         )
-
-        try:
-            zone = ZoneInfo(tz)
-        except ZoneInfoNotFoundError:
-            zone = ZoneInfo("Asia/Taipei")
-        remaining = days_remaining(target_date_utc, datetime.now(zone))
-
-        channel_mention = channel.mention if channel is not None else "這個頻道"
         await interaction.response.send_message(
-            f"✅ 倒數提醒已建立（ID `{countdown_id}`）：**{title}**，"
-            f"目前還剩 **{remaining}** 天，每天 {send_hour:02d}:{send_minute:02d} "
-            f"發到 {channel_mention}。",
-            ephemeral=True,
+            embed=mode_choice.build_embed(), view=mode_choice, ephemeral=True
         )
+        mode_choice.message = await interaction.original_response()
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         log.exception("快速建立倒數提醒時發生未預期錯誤", exc_info=error)

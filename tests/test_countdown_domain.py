@@ -1,11 +1,17 @@
-"""`domain.countdown` 純邏輯測試——距離目標日期還剩幾天、今天該不該發。"""
+"""`domain.countdown` 純邏輯測試——距離目標日期還剩幾天／已經過幾天、今天
+該不該發、前綴+數字+後綴的模板渲染。"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src.domain.countdown import days_remaining, should_send_today
+from src.domain.countdown import (
+    days_elapsed,
+    days_remaining,
+    render_countdown_text,
+    should_send_today,
+)
 
 TPE = ZoneInfo("Asia/Taipei")
 
@@ -35,6 +41,50 @@ class TestDaysRemaining:
         assert days_remaining(int(target.timestamp() * 1000), morning) == days_remaining(
             int(target.timestamp() * 1000), night
         )
+
+
+class TestDaysElapsed:
+    """正數模式：錨點是「今天－使用者輸入的天數」反推回去存的，所以
+    `days_elapsed` 跟 `days_remaining` 互為正負號。"""
+
+    def test_anchor_in_past_gives_positive_elapsed(self) -> None:
+        anchor = datetime(2027, 6, 1, tzinfo=TPE)
+        now_local = datetime(2027, 6, 13, 8, 0, tzinfo=TPE)
+        assert days_elapsed(int(anchor.timestamp() * 1000), now_local) == 12
+
+    def test_anchor_today_is_zero(self) -> None:
+        anchor = datetime(2027, 6, 13, tzinfo=TPE)
+        now_local = datetime(2027, 6, 13, 8, 0, tzinfo=TPE)
+        assert days_elapsed(int(anchor.timestamp() * 1000), now_local) == 0
+
+    def test_increments_by_one_each_day(self) -> None:
+        anchor = datetime(2027, 6, 1, tzinfo=TPE)
+        day_n = days_elapsed(
+            int(anchor.timestamp() * 1000), datetime(2027, 6, 13, 8, 0, tzinfo=TPE)
+        )
+        day_n_plus_1 = days_elapsed(
+            int(anchor.timestamp() * 1000), datetime(2027, 6, 14, 8, 0, tzinfo=TPE)
+        )
+        assert day_n_plus_1 == day_n + 1
+
+
+class TestRenderCountdownText:
+    def test_with_suffix(self) -> None:
+        assert render_countdown_text("退伍倒數", 500, "天") == "退伍倒數500天"
+
+    def test_without_suffix(self) -> None:
+        assert render_countdown_text("沒有小名的日子第", 12, None) == "沒有小名的日子第12"
+
+    def test_blank_suffix_treated_as_none(self) -> None:
+        assert render_countdown_text("退伍倒數", 500, "") == "退伍倒數500"
+
+    def test_zero_count(self) -> None:
+        assert render_countdown_text("退伍倒數", 0, "天") == "退伍倒數0天"
+
+    def test_negative_count(self) -> None:
+        """理論上倒數模式到 0 就 completed 不會再送，但函式本身不該對負數
+        報錯——純字串組裝，不做業務規則判斷。"""
+        assert render_countdown_text("退伍倒數", -3, "天") == "退伍倒數-3天"
 
 
 class TestShouldSendToday:

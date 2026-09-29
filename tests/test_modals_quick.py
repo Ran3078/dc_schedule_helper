@@ -24,6 +24,7 @@ from src.bot.modals_quick import (
     QuickFf14PositionPickerView,
     QuickPollModal,
 )
+from src.bot.views_countdown import CountdownModeChoiceView
 from src.bot.views_datetime import DateTimePickerView
 from src.bot.views_invitees import InviteePickerView
 from src.db import repo
@@ -263,30 +264,86 @@ class TestQuickPollModalSubmit:
         assert "embed" in kwargs
 
 
+def _extract_mode_choice(interaction: MagicMock) -> CountdownModeChoiceView:
+    _, kwargs = interaction.response.send_message.call_args
+    return kwargs["view"]
+
+
+async def _finish_countdown_via_mode_choice(
+    interaction: MagicMock, *, mode: str = "countdown", hour: int = 9, minute: int = 0
+) -> None:
+    """`QuickCountdownModal.on_submit` 驗證通過後改開
+    `CountdownModeChoiceView`（先選倒數/正數，再解析日期/天數），選完模式
+    才會轉進 `CountdownTimePickerView`——完整流程是 Modal → 模式選擇 →
+    時間選擇 → 確認，三段式。"""
+    mode_choice = _extract_mode_choice(interaction)
+    mode_interaction = MagicMock()
+    mode_interaction.response = AsyncMock()
+    fake_message = MagicMock()
+    fake_message.id = 777
+    mode_interaction.original_response = AsyncMock(return_value=fake_message)
+
+    if mode == "countup":
+        await mode_choice.choose_countup.callback(mode_interaction)
+    else:
+        await mode_choice.choose_countdown.callback(mode_interaction)
+
+    _, kwargs = mode_interaction.response.edit_message.call_args
+    picker = kwargs["view"]
+    picker.selected_hour = hour
+    picker.selected_minute = minute
+    confirm_interaction = MagicMock()
+    confirm_interaction.response = AsyncMock()
+    await picker._on_confirm(confirm_interaction)
+
+
 class TestQuickCountdownModalSubmit:
-    async def test_valid_input_creates_countdown(self, db) -> None:
+    async def test_valid_input_opens_mode_choice(self, db) -> None:
         modal = QuickCountdownModal()
         modal.title_input._value = "退伍倒數"
-        modal.date_input._value = "2027-06-15"
-        modal.time_input._value = "09:00"
+        modal.value_input._value = "2027-06-15"
         interaction = _make_interaction()
 
         await modal.on_submit(interaction)
 
-        args, kwargs = interaction.response.send_message.call_args
-        assert "已建立" in args[0]
-        assert kwargs["ephemeral"] is True
+        _, kwargs = interaction.response.send_message.call_args
+        assert isinstance(kwargs["view"], CountdownModeChoiceView)
+
+    async def test_valid_input_creates_countdown_after_choosing_mode_and_time(
+        self, db
+    ) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.value_input._value = "2027-06-15"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+        await _finish_countdown_via_mode_choice(interaction, mode="countdown", hour=9, minute=0)
 
         rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
         assert len(rows) == 1
         assert rows[0]["title"] == "退伍倒數"
+        assert rows[0]["mode"] == "countdown"
         assert rows[0]["send_hour"] == 9
+
+    async def test_countup_mode_via_mode_choice(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "沒有小名的日子第"
+        modal.value_input._value = "12"
+        modal.suffix_input._value = "天"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+        await _finish_countdown_via_mode_choice(interaction, mode="countup")
+
+        rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
+        assert rows[0]["mode"] == "countup"
+        assert rows[0]["suffix"] == "天"
 
     async def test_empty_title_is_rejected(self, db) -> None:
         modal = QuickCountdownModal()
         modal.title_input._value = "   "
-        modal.date_input._value = "2027-06-15"
-        modal.time_input._value = "09:00"
+        modal.value_input._value = "2027-06-15"
         interaction = _make_interaction()
 
         await modal.on_submit(interaction)
@@ -294,37 +351,12 @@ class TestQuickCountdownModalSubmit:
         args, _ = interaction.response.send_message.call_args
         assert "不能是空的" in args[0]
 
-    async def test_invalid_date_is_rejected(self, db) -> None:
-        modal = QuickCountdownModal()
-        modal.title_input._value = "退伍倒數"
-        modal.date_input._value = "不是日期"
-        modal.time_input._value = "09:00"
-        interaction = _make_interaction()
-
-        await modal.on_submit(interaction)
-
-        args, _ = interaction.response.send_message.call_args
-        assert "無法解析" in args[0]
-
-    async def test_invalid_time_is_rejected(self, db) -> None:
-        modal = QuickCountdownModal()
-        modal.title_input._value = "退伍倒數"
-        modal.date_input._value = "2027-06-15"
-        modal.time_input._value = "不是時間"
-        interaction = _make_interaction()
-
-        await modal.on_submit(interaction)
-
-        args, _ = interaction.response.send_message.call_args
-        assert "無法解析" in args[0]
-
     async def test_organizer_role_required_when_configured(self, db) -> None:
         await repo.ensure_guild(GUILD_ID, "Asia/Taipei")
         await repo.update_guild_settings(GUILD_ID, organizer_role_id="999999999999999999")
         modal = QuickCountdownModal()
         modal.title_input._value = "退伍倒數"
-        modal.date_input._value = "2027-06-15"
-        modal.time_input._value = "09:00"
+        modal.value_input._value = "2027-06-15"
         interaction = _make_interaction()
 
         await modal.on_submit(interaction)
@@ -335,11 +367,23 @@ class TestQuickCountdownModalSubmit:
     async def test_blank_content_becomes_none(self, db) -> None:
         modal = QuickCountdownModal()
         modal.title_input._value = "退伍倒數"
-        modal.date_input._value = "2027-06-15"
-        modal.time_input._value = "09:00"
+        modal.value_input._value = "2027-06-15"
         interaction = _make_interaction()
 
         await modal.on_submit(interaction)
+        await _finish_countdown_via_mode_choice(interaction)
 
         rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
         assert rows[0]["content"] is None
+
+    async def test_blank_suffix_becomes_none(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.value_input._value = "2027-06-15"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+        await _finish_countdown_via_mode_choice(interaction)
+
+        rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
+        assert rows[0]["suffix"] is None

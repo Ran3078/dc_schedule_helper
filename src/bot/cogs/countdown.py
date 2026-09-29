@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
@@ -24,11 +24,16 @@ from discord.ext import commands, tasks
 
 from src.bot.cogs._shared import is_organizer, resolve_user_tz
 from src.bot.embeds import Row, build_countdown_embed
+from src.bot.views_countdown import CountdownTimePickerView
 from src.db import repo
-from src.domain.countdown import days_remaining, should_send_today
+from src.domain.countdown import (
+    days_elapsed,
+    days_remaining,
+    render_countdown_text,
+    should_send_today,
+)
 from src.lib.clock import now_ms
-from src.lib.ids import new_id
-from src.lib.timeparse import TimeParseError, parse_date, parse_time_of_day
+from src.lib.timeparse import TimeParseError, parse_day_count, parse_target_date
 
 log = logging.getLogger(__name__)
 
@@ -58,30 +63,42 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
 
     @app_commands.command(name="create", description="建立倒數提醒")
     @app_commands.describe(
-        title="倒數標題，例如「退伍倒數」",
-        date="目標日期，例如 2027-06-15 或 6/15",
-        time="每天發送的時間（24 小時制），例如 09:00",
+        title="訊息前綴，例如「退伍倒數」「沒有小名的日子第」——天數會自動接在後面",
+        mode="倒數（走到目標日期）或正數（從某天開始每天累加，永遠不會自動停止）",
+        value=(
+            "倒數模式：目標日期（2027-06-15、6/15）或「還剩幾天」的數字；"
+            "正數模式：目前已經是第幾天的數字"
+        ),
+        suffix="接在天數後面的文字，例如「天」（選填）",
         content="訊息內容（選填）",
         channel="要發到哪個頻道（選填，預設是目前這個頻道）",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="倒數（走到目標日期）", value="countdown"),
+            app_commands.Choice(name="正數（從某天開始累加，手動取消才會停）", value="countup"),
+        ]
     )
     @app_commands.guild_only()
     async def create(
         self,
         interaction: discord.Interaction,
         title: str,
-        date: str,
-        time: str,
+        mode: app_commands.Choice[str],
+        value: str,
+        suffix: str | None = None,
         content: str | None = None,
         channel: discord.TextChannel | None = None,
     ) -> None:
-        await self._create_impl(interaction, title, date, time, content, channel)
+        await self._create_impl(interaction, title, mode.value, value, suffix, content, channel)
 
     async def _create_impl(
         self,
         interaction: discord.Interaction,
         title: str,
-        date: str,
-        time: str,
+        mode: str,
+        value: str,
+        suffix: str | None,
         content: str | None,
         channel: discord.TextChannel | None,
     ) -> None:
@@ -111,22 +128,29 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
         tz = await resolve_user_tz(self.bot, interaction.guild_id, interaction.user.id)
 
         try:
-            target_date_utc = parse_date(date, tz)
-        except TimeParseError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-
-        try:
-            send_hour, send_minute = parse_time_of_day(time)
+            if mode == "countup":
+                days = parse_day_count(value)
+                try:
+                    zone = ZoneInfo(tz)
+                except ZoneInfoNotFoundError:
+                    zone = ZoneInfo("Asia/Taipei")
+                today_midnight = datetime.now(zone).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                target_date_utc = int((today_midnight - timedelta(days=days)).timestamp() * 1000)
+            else:
+                target_date_utc = parse_target_date(value, tz)
         except TimeParseError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
         target_channel = channel or interaction.channel
         content_value = content.strip() or None if content else None
-        countdown_id = new_id()
-        await repo.create_countdown(
-            countdown_id=countdown_id,
+        suffix_value = suffix.strip() or None if suffix else None
+
+        # 每天發送時間改用下拉選單挑（跟 /event create 省略 time 時走
+        # DateTimePickerView 同一種理由：手打時間格式容易出錯）。
+        picker = CountdownTimePickerView(
             guild_id=interaction.guild_id,
             channel_id=target_channel.id,
             creator_id=interaction.user.id,
@@ -134,22 +158,13 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
             content=content_value,
             target_date_utc=target_date_utc,
             tz=tz,
-            send_hour=send_hour,
-            send_minute=send_minute,
+            mode=mode,
+            suffix=suffix_value,
         )
-
-        try:
-            zone = ZoneInfo(tz)
-        except ZoneInfoNotFoundError:
-            zone = ZoneInfo("Asia/Taipei")
-        remaining = days_remaining(target_date_utc, datetime.now(zone))
-
         await interaction.response.send_message(
-            f"✅ 倒數提醒已建立（ID `{countdown_id}`）：**{title}**，"
-            f"目前還剩 **{remaining}** 天，每天 {send_hour:02d}:{send_minute:02d} "
-            f"發到 {target_channel.mention}。",
-            ephemeral=True,
+            embed=picker.build_embed(), view=picker, ephemeral=True
         )
+        picker.message = await interaction.original_response()
 
     @app_commands.command(name="list", description="列出這個伺服器還在倒數中的提醒")
     @app_commands.guild_only()
@@ -172,10 +187,16 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
                 zone = ZoneInfo(countdown["tz"])
             except ZoneInfoNotFoundError:
                 zone = ZoneInfo("Asia/Taipei")
-            remaining = days_remaining(countdown["target_date_utc"], datetime.now(zone))
+            now_local = datetime.now(zone)
+            count = (
+                days_elapsed(countdown["target_date_utc"], now_local)
+                if countdown["mode"] == "countup"
+                else days_remaining(countdown["target_date_utc"], now_local)
+            )
+            preview = render_countdown_text(countdown["title"], count, countdown["suffix"])
             lines.append(
-                f"・**{countdown['title']}**（還剩 {remaining} 天，"
-                f"每天 {countdown['send_hour']:02d}:{countdown['send_minute']:02d}，"
+                f"・**{preview}**（每天 "
+                f"{countdown['send_hour']:02d}:{countdown['send_minute']:02d}，"
                 f"<#{countdown['channel_id']}>）\n"
                 f"　ID: `{countdown['id']}`"
             )
@@ -257,8 +278,13 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
             )
             return
 
-        remaining = days_remaining(countdown["target_date_utc"], now_local)
-        embed = build_countdown_embed(countdown, remaining)
+        is_countup = countdown["mode"] == "countup"
+        count = (
+            days_elapsed(countdown["target_date_utc"], now_local)
+            if is_countup
+            else days_remaining(countdown["target_date_utc"], now_local)
+        )
+        embed = build_countdown_embed(countdown, count)
 
         try:
             await channel.send(embed=embed)
@@ -266,7 +292,10 @@ class Countdown(commands.GroupCog, group_name="countdown", group_description="�
             log.warning("倒數提醒 %s 發送失敗", countdown["id"], exc_info=True)
             return
 
-        await repo.mark_countdown_sent(countdown["id"], now_ms(), completed=remaining <= 0)
+        # 正數模式永遠不自動完成——只能手動 /countdown cancel，見這輪確認過
+        # 的產品決策（跟「沒發生意外第 N 天」這種看板一樣，沒有終點）。
+        completed = (not is_countup) and count <= 0
+        await repo.mark_countdown_sent(countdown["id"], now_ms(), completed=completed)
 
     async def _resolve_channel(self, channel_id: int) -> discord.abc.Messageable | None:
         channel = self.bot.get_channel(channel_id)

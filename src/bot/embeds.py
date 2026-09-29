@@ -214,20 +214,25 @@ def build_reminder_embed(reminder: Row) -> discord.Embed:
     )
 
 
-def build_countdown_embed(countdown: Row, days_left: int) -> discord.Embed:
-    """每天發送的倒數卡片。`days_left` 由呼叫端算好傳入
-    （`domain.countdown.days_remaining`）——embed 只管顯示，不重算。"""
-    if days_left > 0:
-        headline = f"⏳ 還剩 **{days_left}** 天"
-    else:
-        headline = "🎉 就是今天！"
+def build_countdown_embed(countdown: Row, count: int) -> discord.Embed:
+    """每天發送的倒數／正數卡片。`count` 由呼叫端算好傳入（倒數模式用
+    `domain.countdown.days_remaining`，正數模式用 `days_elapsed`）——embed
+    只管顯示，不重算、也不判斷 mode。
 
-    description = f"{headline}\n{discord_timestamp(countdown['target_date_utc'], 'D')}"
+    標題直接是 `render_countdown_text(title, count, suffix)` 組出來的完整
+    句子（例如「退伍倒數500天」「沒有小名的日子第12天」）——前綴/後綴是
+    使用者自訂的模板，不是這裡寫死的格式。
+    """
+    from src.domain.countdown import render_countdown_text
+
+    text = render_countdown_text(countdown["title"], count, countdown.get("suffix"))
+
+    description = discord_timestamp(countdown["target_date_utc"], "D")
     if countdown.get("content"):
         description += f"\n\n{countdown['content']}"
 
     return discord.Embed(
-        title=f"📆 {countdown['title']}",
+        title=f"📆 {text}",
         description=description,
         colour=discord.Colour.gold(),
     )

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,8 +16,9 @@ from src.lib.timeparse import (
     discord_timestamp,
     parse_date,
     parse_datetime,
+    parse_day_count,
     parse_duration_minutes,
-    parse_time_of_day,
+    parse_target_date,
 )
 
 TPE = "Asia/Taipei"
@@ -184,24 +185,81 @@ class TestDateParsing:
             parse_date("2027-02-30", TPE, now=NOW)
 
 
-class TestTimeOfDayParsing:
-    def test_parses_hour_and_minute(self) -> None:
-        assert parse_time_of_day("09:00") == (9, 0)
+class TestTargetDateParsing:
+    """`countdown` 功能用：目標日期可以打日期字串（見 TestDateParsing），
+    也可以直接打「還剩幾天」的純數字——使用者懶得算確切日期時的捷徑。"""
 
-    def test_parses_late_hour(self) -> None:
-        assert parse_time_of_day("23:59") == (23, 59)
+    def test_pure_digits_means_days_from_now(self) -> None:
+        ms = parse_target_date("5", TPE, now=NOW)
+        expected = datetime(2026, 8, 4, tzinfo=ZoneInfo(TPE))  # 7/30 + 5 天
+        assert ms == int(expected.timestamp() * 1000)
 
-    def test_rejects_hour_out_of_range(self) -> None:
+    def test_zero_days_means_today(self) -> None:
+        ms = parse_target_date("0", TPE, now=NOW)
+        expected = datetime(2026, 7, 30, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_large_day_count(self) -> None:
+        """實際使用情境：懶得算確切退伍日期，直接打還剩幾天。"""
+        ms = parse_target_date("500", TPE, now=NOW)
+        expected = datetime(2026, 7, 30, tzinfo=ZoneInfo(TPE)) + timedelta(days=500)
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_falls_back_to_date_parsing_for_non_digit_input(self) -> None:
+        ms = parse_target_date("2027-06-15", TPE, now=NOW)
+        expected = datetime(2027, 6, 15, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_month_day_shortcut_still_works(self) -> None:
+        ms = parse_target_date("8/1", TPE, now=NOW)
+        expected = datetime(2026, 8, 1, tzinfo=ZoneInfo(TPE))
+        assert ms == int(expected.timestamp() * 1000)
+
+    def test_rejects_empty_string(self) -> None:
         with pytest.raises(TimeParseError):
-            parse_time_of_day("24:00")
-
-    def test_rejects_minute_out_of_range(self) -> None:
-        with pytest.raises(TimeParseError):
-            parse_time_of_day("09:60")
+            parse_target_date("   ", TPE, now=NOW)
 
     def test_rejects_garbage(self) -> None:
-        with pytest.raises(TimeParseError, match="HH:MM"):
-            parse_time_of_day("早上九點")
+        with pytest.raises(TimeParseError, match="無法解析"):
+            parse_target_date("下個月", TPE, now=NOW)
+
+    def test_negative_number_is_not_treated_as_days(self) -> None:
+        """負數不符合純數字 regex，會落到日期解析那條路，因為不是合法日期而報錯。"""
+        with pytest.raises(TimeParseError):
+            parse_target_date("-5", TPE, now=NOW)
+
+
+class TestDayCountParsing:
+    """`countdown` 正數模式用：「目前已經第幾天」的純數字輸入。"""
+
+    def test_parses_positive_integer(self) -> None:
+        assert parse_day_count("12") == 12
+
+    def test_parses_large_number(self) -> None:
+        assert parse_day_count("500") == 500
+
+    def test_tolerates_surrounding_whitespace(self) -> None:
+        assert parse_day_count("  12  ") == 12
+
+    def test_rejects_zero(self) -> None:
+        with pytest.raises(TimeParseError, match="大於 0"):
+            parse_day_count("0")
+
+    def test_rejects_negative(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_day_count("-5")
+
+    def test_rejects_empty_string(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_day_count("   ")
+
+    def test_rejects_non_digit(self) -> None:
+        with pytest.raises(TimeParseError, match="正整數"):
+            parse_day_count("十二")
+
+    def test_rejects_decimal(self) -> None:
+        with pytest.raises(TimeParseError):
+            parse_day_count("12.5")
 
 
 class TestDiscordTimestamp:

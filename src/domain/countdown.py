@@ -23,6 +23,24 @@ def days_remaining(target_date_utc: int, now_local: datetime) -> int:
     return (target_local.date() - now_local.date()).days
 
 
+def days_elapsed(anchor_date_utc: int, now_local: datetime) -> int:
+    """正數模式：距離錨點日期已經過了幾天。
+
+    錨點是由「今天 − 使用者輸入的天數」反推回去存的（見
+    `parse_day_count` 的呼叫端），所以建立當下 `days_elapsed` 就等於
+    使用者輸入的那個數字，之後每天自動 +1，不會有 off-by-one 的問題。
+    跟 `days_remaining` 互為正負號，不用另外重寫一次日期比較邏輯。
+    """
+    return -days_remaining(anchor_date_utc, now_local)
+
+
+def render_countdown_text(prefix: str, count: int, suffix: str | None) -> str:
+    """前綴 + 數字 + 後綴，倒數/正數共用同一個模板規則——不需要任何
+    佔位符語法，`suffix` 是 `None` 時就單純不接。
+    """
+    return f"{prefix}{count}{suffix or ''}"
+
+
 def should_send_today(
     send_hour: int, send_minute: int, last_sent_utc: int | None, now_local: datetime
 ) -> bool:

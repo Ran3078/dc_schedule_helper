@@ -907,12 +907,20 @@ async def create_countdown(
     tz: str,
     send_hour: int,
     send_minute: int,
+    mode: str = "countdown",
+    suffix: str | None = None,
 ) -> None:
+    """`mode` 是 'countdown'（倒數到 `target_date_utc`）或 'countup'（從
+    `target_date_utc` 這個過去錨點開始累加）——repo 層不管這兩種模式的
+    業務含義，只是多存兩欄，怎麼算「還剩/已經幾天」是 domain 層的事
+    （見 `domain/countdown.py` 的 `days_remaining`／`days_elapsed`）。
+    """
     now = now_ms()
     await engine.execute(
         "INSERT INTO countdowns (id, guild_id, channel_id, creator_id, title, content, "
-        "target_date_utc, tz, send_hour, send_minute, status, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        "target_date_utc, tz, send_hour, send_minute, mode, suffix, status, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
         (
             countdown_id,
             str(guild_id),
@@ -924,6 +932,8 @@ async def create_countdown(
             tz,
             send_hour,
             send_minute,
+            mode,
+            suffix,
             now,
             now,
         ),
