@@ -892,7 +892,7 @@ async def close_poll(poll_id: str, guild_id: int | str) -> bool:
     return rowcount > 0
 
 
-# ── 倒數提醒 ──────────────────────────────────────────────────────────────
+# ── 天數提醒 ──────────────────────────────────────────────────────────────
 
 
 async def create_countdown(
@@ -948,7 +948,7 @@ async def owned_countdown(countdown_id: str, guild_id: int | str) -> Row | None:
 
 
 async def list_active_countdowns_in_guild(guild_id: int | str) -> list[Row]:
-    """`/countdown list` 用：這個伺服器目前還在倒數中的清單，依目標日期排序。"""
+    """`/countdown list` 用：這個伺服器目前還在進行中的天數提醒清單，依目標日期排序。"""
     return await engine.query_all(
         "SELECT * FROM countdowns WHERE guild_id = ? AND status = 'active' "
         "ORDER BY target_date_utc ASC",
@@ -967,7 +967,7 @@ async def cancel_countdown(countdown_id: str, guild_id: int | str) -> bool:
 
 
 async def list_active_countdowns() -> list[Row]:
-    """任務迴圈用：一次撈出所有伺服器還在倒數中的項目。這是本檔案開頭
+    """任務迴圈用：一次撈出所有伺服器還在進行中的天數提醒。這是本檔案開頭
     紀律第 5 點那個例外（系統層級背景工作，不是代表任何特定伺服器的使用者
     操作），理由同 `list_due_reminders()`／`list_guilds_with_weekly_digest_enabled()`。
     """

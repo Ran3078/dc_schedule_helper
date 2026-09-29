@@ -1,4 +1,4 @@
--- 009_countdown_mode: 倒數提醒支援「正數」模式 + 自訂前後綴文字模板
+-- 009_countdown_mode: 天數提醒支援「正數」模式 + 自訂前後綴文字模板
 --
 -- mode 預設 'countdown'，既有資料行行為不變。target_date_utc 的意義依
 -- mode 而定：countdown 是未來目標日期（不變），countup 是過去的錨點日期

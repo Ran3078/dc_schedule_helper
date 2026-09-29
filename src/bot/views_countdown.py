@@ -1,4 +1,4 @@
-"""`/countdown create`、@提及選單「建立倒數」共用的每天發送時間挑選器。
+"""`/countdown create`、@提及選單「天數提醒」共用的每天發送時間挑選器。
 
 標題／目標日期／內容確定後，改用下拉選單挑「每天幾點發送」，不像
 `/countdown` 剛推出時那樣讓使用者手打 `HH:MM`——理由同 `views_datetime.py`
@@ -8,7 +8,7 @@
 直接重用 `views_datetime.HourSelect`／`MinuteSelect`——這兩個元件本來就
 特地拿掉底線前綴、設計成模組內共用（見該檔案的說明：只要呼叫端提供
 `selected_hour`／`selected_minute`／`rerender()` 就能接上），不需要再寫
-一份一樣的下拉選單。分鐘只有整點/15/30/45 四個選項，倒數提醒不需要精確
+一份一樣的下拉選單。分鐘只有整點/15/30/45 四個選項，天數提醒不需要精確
 到分鐘。
 """
 
@@ -141,7 +141,7 @@ class CountdownTimePickerView(discord.ui.View):
                 child.disabled = True  # type: ignore[attr-defined]
         await interaction.response.edit_message(
             content=(
-                f"✅ 倒數提醒已建立（ID `{countdown_id}`）：**{preview}**，"
+                f"✅ 天數提醒已建立（ID `{countdown_id}`）：**{preview}**，"
                 f"每天 {self.selected_hour:02d}:{self.selected_minute:02d} 發送。"
             ),
             embed=None,
@@ -154,7 +154,7 @@ class CountdownTimePickerView(discord.ui.View):
                 child.disabled = True  # type: ignore[attr-defined]
         self.stop()
         await interaction.response.edit_message(
-            content="已取消，倒數提醒未建立。", embed=None, view=self
+            content="已取消，天數提醒未建立。", embed=None, view=self
         )
 
     async def on_timeout(self) -> None:
@@ -164,7 +164,7 @@ class CountdownTimePickerView(discord.ui.View):
         if self.message is not None:
             try:
                 await self.message.edit(
-                    content="⌛ 已逾時未選擇時間，倒數提醒未建立。請重新試一次。",
+                    content="⌛ 已逾時未選擇時間，天數提醒未建立。請重新試一次。",
                     embed=None,
                     view=self,
                 )
@@ -288,7 +288,7 @@ class CountdownModeChoiceView(discord.ui.View):
         if self.message is not None:
             try:
                 await self.message.edit(
-                    content="⌛ 已逾時未選擇模式，倒數提醒未建立。請重新試一次。",
+                    content="⌛ 已逾時未選擇模式，天數提醒未建立。請重新試一次。",
                     embed=None,
                     view=self,
                 )

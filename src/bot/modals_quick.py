@@ -336,7 +336,7 @@ class QuickPollModal(discord.ui.Modal, title="快速建立投票"):
 _COUNTDOWN_MAX_TITLE_LENGTH = 200
 
 
-class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
+class QuickCountdownModal(discord.ui.Modal, title="快速建立天數提醒"):
     """`@提及選單`用：跟 `/countdown create` 是同一套驗證邏輯，這裡重複一份
     而非呼叫 `cogs.countdown.Countdown._create_impl`——理由同 `QuickPollModal`
     對 `Polls` 的作法：只有兩個呼叫端（指令本身／這個 Modal），還沒到
@@ -400,18 +400,18 @@ class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
             interaction.user, guild_settings
         ):
             await interaction.response.send_message(
-                "這個伺服器限定特定身分組才能建立倒數提醒，請洽伺服器管理員。",
+                "這個伺服器限定特定身分組才能建立天數提醒，請洽伺服器管理員。",
                 ephemeral=True,
             )
             return
 
         title = self.title_input.value.strip()
         if not title:
-            await interaction.response.send_message("倒數標題不能是空的。", ephemeral=True)
+            await interaction.response.send_message("天數提醒標題不能是空的。", ephemeral=True)
             return
         if len(title) > _COUNTDOWN_MAX_TITLE_LENGTH:
             await interaction.response.send_message(
-                f"倒數標題太長了（{len(title)} 字，上限 {_COUNTDOWN_MAX_TITLE_LENGTH} 字）。",
+                f"天數提醒標題太長了（{len(title)} 字，上限 {_COUNTDOWN_MAX_TITLE_LENGTH} 字）。",
                 ephemeral=True,
             )
             return
@@ -438,8 +438,8 @@ class QuickCountdownModal(discord.ui.Modal, title="快速建立倒數提醒"):
         mode_choice.message = await interaction.original_response()
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        log.exception("快速建立倒數提醒時發生未預期錯誤", exc_info=error)
-        message = "建立倒數提醒時發生錯誤，請稍後再試一次。"
+        log.exception("快速建立天數提醒時發生未預期錯誤", exc_info=error)
+        message = "建立天數提醒時發生錯誤，請稍後再試一次。"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:

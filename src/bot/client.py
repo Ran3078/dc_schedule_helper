@@ -25,7 +25,7 @@ INITIAL_COGS: tuple[str, ...] = (
     "src.bot.cogs.ff14",  # /ff14_recruit（M8）
     "src.bot.cogs.mention_menu",  # @提及快速選單（M9）
     "src.bot.cogs.weekly_digest",  # 每週活動清單（M9）
-    "src.bot.cogs.countdown",  # /countdown：自訂倒數提醒
+    "src.bot.cogs.countdown",  # /countdown：自訂天數提醒
 )
 
 
