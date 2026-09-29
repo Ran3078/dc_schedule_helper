@@ -15,7 +15,12 @@ import discord
 from discord.ext import commands
 
 from src.bot.embeds import build_event_list_embed
-from src.bot.modals_quick import QuickEventModal, QuickFf14Modal, QuickPollModal
+from src.bot.modals_quick import (
+    QuickCountdownModal,
+    QuickEventModal,
+    QuickFf14Modal,
+    QuickPollModal,
+)
 from src.db import repo
 from src.lib.clock import now_ms
 
@@ -47,6 +52,12 @@ class MentionMenuView(discord.ui.View):
         self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(QuickPollModal())
+
+    @discord.ui.button(label="建立倒數", style=discord.ButtonStyle.primary, emoji="⏳")
+    async def create_countdown(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(QuickCountdownModal())
 
     @discord.ui.button(label="本週活動", style=discord.ButtonStyle.secondary, emoji="📋")
     async def show_week(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:

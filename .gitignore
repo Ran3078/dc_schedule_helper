@@ -25,6 +25,12 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 文件：預設不進版控（開發過程的筆記/交接文件不必公開），
+# 例外的兩個都是有自動化在讀、必須留在 repo 裡才會生效：
+#   README.md — 給人看的主要文件
+#   REVIEW.md — Claude Code AI PR 審查代理讀取的客製指示（見 CI 那個 workflow）
+# PROCESS.md 原本有進版控，後來決定拿掉（不影響任何自動化，純粹是開發紀錄）。
 PLAN.md
 *.md
 !README.md

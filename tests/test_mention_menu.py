@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 from src.bot.cogs.mention_menu import MentionMenu, MentionMenuView
-from src.bot.modals_quick import QuickEventModal, QuickFf14Modal, QuickPollModal
+from src.bot.modals_quick import (
+    QuickCountdownModal,
+    QuickEventModal,
+    QuickFf14Modal,
+    QuickPollModal,
+)
 from src.db import repo
 from src.lib.clock import now_ms
 from src.lib.ids import new_id
@@ -133,6 +138,16 @@ class TestMentionMenuViewButtons:
         interaction.response.send_modal.assert_awaited_once()
         modal = interaction.response.send_modal.call_args[0][0]
         assert isinstance(modal, QuickPollModal)
+
+    async def test_countdown_button_opens_quick_countdown_modal(self, db) -> None:
+        view = MentionMenuView()
+        interaction = _make_button_interaction()
+
+        await view.create_countdown.callback(interaction)
+
+        interaction.response.send_modal.assert_awaited_once()
+        modal = interaction.response.send_modal.call_args[0][0]
+        assert isinstance(modal, QuickCountdownModal)
 
     async def test_show_week_button_sends_ephemeral_event_list(self, db) -> None:
         event_id = new_id()

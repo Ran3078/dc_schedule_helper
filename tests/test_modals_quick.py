@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 from src.bot.modals_quick import (
+    QuickCountdownModal,
     QuickEventModal,
     QuickFf14Modal,
     QuickFf14PositionPickerView,
@@ -45,6 +46,8 @@ def _make_member(user_id: int) -> MagicMock:
 
 def _make_channel() -> MagicMock:
     channel = MagicMock()
+    channel.id = CHANNEL_ID
+    channel.mention = f"<#{CHANNEL_ID}>"
     channel.fetch_message = AsyncMock(return_value=AsyncMock())
     return channel
 
@@ -258,3 +261,85 @@ class TestQuickPollModalSubmit:
         args, kwargs = interaction.response.send_message.call_args
         assert not args  # 沒有走「不能是空的」/「特定身分組」那條錯誤訊息分支
         assert "embed" in kwargs
+
+
+class TestQuickCountdownModalSubmit:
+    async def test_valid_input_creates_countdown(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.date_input._value = "2027-06-15"
+        modal.time_input._value = "09:00"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        args, kwargs = interaction.response.send_message.call_args
+        assert "已建立" in args[0]
+        assert kwargs["ephemeral"] is True
+
+        rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
+        assert len(rows) == 1
+        assert rows[0]["title"] == "退伍倒數"
+        assert rows[0]["send_hour"] == 9
+
+    async def test_empty_title_is_rejected(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "   "
+        modal.date_input._value = "2027-06-15"
+        modal.time_input._value = "09:00"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        args, _ = interaction.response.send_message.call_args
+        assert "不能是空的" in args[0]
+
+    async def test_invalid_date_is_rejected(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.date_input._value = "不是日期"
+        modal.time_input._value = "09:00"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        args, _ = interaction.response.send_message.call_args
+        assert "無法解析" in args[0]
+
+    async def test_invalid_time_is_rejected(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.date_input._value = "2027-06-15"
+        modal.time_input._value = "不是時間"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        args, _ = interaction.response.send_message.call_args
+        assert "無法解析" in args[0]
+
+    async def test_organizer_role_required_when_configured(self, db) -> None:
+        await repo.ensure_guild(GUILD_ID, "Asia/Taipei")
+        await repo.update_guild_settings(GUILD_ID, organizer_role_id="999999999999999999")
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.date_input._value = "2027-06-15"
+        modal.time_input._value = "09:00"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        args, _ = interaction.response.send_message.call_args
+        assert "特定身分組" in args[0]
+
+    async def test_blank_content_becomes_none(self, db) -> None:
+        modal = QuickCountdownModal()
+        modal.title_input._value = "退伍倒數"
+        modal.date_input._value = "2027-06-15"
+        modal.time_input._value = "09:00"
+        interaction = _make_interaction()
+
+        await modal.on_submit(interaction)
+
+        rows = await repo.list_active_countdowns_in_guild(GUILD_ID)
+        assert rows[0]["content"] is None
