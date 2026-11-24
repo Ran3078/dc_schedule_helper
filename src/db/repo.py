@@ -440,22 +440,62 @@ async def update_event(
     值（不管使用者實際改了哪個），所以這裡是整批覆寫，不是「只更新有變的
     欄位」那種部分更新——比 `update_guild_settings` 的動態 SET 簡單，不需要
     分辨「沒給」跟「給了 None」。
+
+    開始時間有變動時，同一交易內依新時間重算 reminders：
+    - 新觸發時間仍在未來：不論原本 state，一律改回 pending 並套用新 fire_at_utc
+      （已發過的提醒也會依新時間再提醒一次）
+    - 新觸發時間已過、原本 pending：改成 skipped，避免 scheduler 立刻補發
+    - 新觸發時間已過、原本已發送：維持原狀
+    時間沒變時提醒完全不動。
     """
-    rowcount = await engine.execute(
-        "UPDATE events SET title = ?, starts_at_utc = ?, ends_at_utc = ?, location = ?, "
-        "description = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
-        (
-            title,
-            starts_at_utc,
-            ends_at_utc,
-            location,
-            description,
-            now_ms(),
-            event_id,
-            str(guild_id),
-        ),
-    )
-    return rowcount > 0
+    guild_id_s = str(guild_id)
+    now = now_ms()
+
+    def _tx(conn: Any) -> bool:
+        existing = conn.execute(
+            "SELECT starts_at_utc FROM events WHERE id = ? AND guild_id = ?",
+            (event_id, guild_id_s),
+        ).fetchone()
+        if existing is None:
+            return False
+
+        old_starts_at_utc = existing[0]
+        conn.execute(
+            "UPDATE events SET title = ?, starts_at_utc = ?, ends_at_utc = ?, location = ?, "
+            "description = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
+            (
+                title,
+                starts_at_utc,
+                ends_at_utc,
+                location,
+                description,
+                now,
+                event_id,
+                guild_id_s,
+            ),
+        )
+
+        if starts_at_utc != old_starts_at_utc:
+            # 新觸發時間仍在未來：重排為 pending（含已 sent/skipped/failed）
+            conn.execute(
+                "UPDATE reminders SET fire_at_utc = ? - offset_min * 60000, "
+                "state = 'pending', sent_at = NULL "
+                "WHERE event_id = ? AND ? - offset_min * 60000 > ?",
+                (starts_at_utc, event_id, starts_at_utc, now),
+            )
+            # 新觸發時間已過、原本還 pending：改 skipped，避免立刻補發
+            conn.execute(
+                "UPDATE reminders SET fire_at_utc = ? - offset_min * 60000, "
+                "state = 'skipped', sent_at = ? "
+                "WHERE event_id = ? AND state = 'pending' "
+                "AND ? - offset_min * 60000 <= ?",
+                (starts_at_utc, now, event_id, starts_at_utc, now),
+            )
+
+        conn.commit()
+        return True
+
+    return await engine.run(_tx)
 
 
 # ── 職位報名（FF14，M8）───────────────────────────────────────────────────

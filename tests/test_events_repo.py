@@ -18,6 +18,7 @@ USER_2 = "2222"
 
 NOW = now_ms()
 HOUR = 3_600_000
+MINUTE = 60_000
 
 
 async def _create(
@@ -302,6 +303,159 @@ class TestUpdateEvent:
             ends_at_utc=None, location=None, description=None,
         )
         assert ok is False
+
+    async def test_reschedules_pending_reminders_when_start_moves_later(self, db) -> None:
+        """改時間後提醒必須跟著新開始時間走，不能依舊時間發。"""
+        old_starts = NOW + 2 * HOUR
+        new_starts = NOW + 5 * HOUR
+        event_id = await _create(
+            db, starts_at_utc=old_starts, reminder_offsets_min=[60, 10]
+        )
+
+        await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="團練",
+            starts_at_utc=new_starts,
+            ends_at_utc=None,
+            location=None,
+            description=None,
+        )
+
+        rows = await db.query_all(
+            "SELECT * FROM reminders WHERE event_id = ? ORDER BY offset_min DESC",
+            (event_id,),
+        )
+        assert len(rows) == 2
+        assert rows[0]["offset_min"] == 60
+        assert rows[0]["fire_at_utc"] == new_starts - 60 * MINUTE
+        assert rows[0]["state"] == "pending"
+        assert rows[1]["offset_min"] == 10
+        assert rows[1]["fire_at_utc"] == new_starts - 10 * MINUTE
+        assert rows[1]["state"] == "pending"
+
+    async def test_skips_pending_reminder_when_new_fire_is_in_the_past(self, db) -> None:
+        """把開始時間提前，使某個 offset 落到過去時，該提醒應 skipped，
+        不能被 list_due_reminders 撈到補發。"""
+        old_starts = NOW + 2 * HOUR
+        # 新開始時間 = NOW + 30min，「提前 60 分」會落到過去，「提前 10 分」仍在未來
+        new_starts = NOW + 30 * MINUTE
+        event_id = await _create(
+            db, starts_at_utc=old_starts, reminder_offsets_min=[60, 10]
+        )
+
+        await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="團練",
+            starts_at_utc=new_starts,
+            ends_at_utc=None,
+            location=None,
+            description=None,
+        )
+
+        rows = {
+            r["offset_min"]: r
+            for r in await db.query_all(
+                "SELECT * FROM reminders WHERE event_id = ?", (event_id,)
+            )
+        }
+        assert rows[60]["state"] == "skipped"
+        assert rows[60]["fire_at_utc"] == new_starts - 60 * MINUTE
+        assert rows[10]["state"] == "pending"
+        assert rows[10]["fire_at_utc"] == new_starts - 10 * MINUTE
+
+        due = await repo.list_due_reminders(NOW + HOUR)
+        assert not any(r["event_id"] == event_id and r["offset_min"] == 60 for r in due)
+
+    async def test_rearms_sent_reminder_when_start_moves_later(self, db) -> None:
+        """已發送的提醒，活動延後且新觸發時間仍在未來時，應重新變回 pending。"""
+        old_starts = NOW + 2 * HOUR
+        new_starts = NOW + 5 * HOUR
+        event_id = await _create(
+            db, starts_at_utc=old_starts, reminder_offsets_min=[60]
+        )
+        reminder = await db.query_one(
+            "SELECT id FROM reminders WHERE event_id = ?", (event_id,)
+        )
+        assert await repo.claim_reminder(reminder["id"]) is True
+
+        await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="團練",
+            starts_at_utc=new_starts,
+            ends_at_utc=None,
+            location=None,
+            description=None,
+        )
+
+        row = await db.query_one("SELECT * FROM reminders WHERE event_id = ?", (event_id,))
+        assert row["state"] == "pending"
+        assert row["sent_at"] is None
+        assert row["fire_at_utc"] == new_starts - 60 * MINUTE
+
+    async def test_title_only_edit_leaves_reminders_untouched(self, db) -> None:
+        """只改標題、不改時間時，提醒完全不變（含已 sent 的不會被重新排定）。"""
+        starts = NOW + 2 * HOUR
+        event_id = await _create(
+            db, starts_at_utc=starts, reminder_offsets_min=[60, 10]
+        )
+        reminder = await db.query_one(
+            "SELECT id, fire_at_utc FROM reminders WHERE event_id = ? AND offset_min = 60",
+            (event_id,),
+        )
+        assert await repo.claim_reminder(reminder["id"]) is True
+
+        await repo.update_event(
+            event_id,
+            GUILD_A,
+            title="新標題",
+            starts_at_utc=starts,
+            ends_at_utc=None,
+            location=None,
+            description=None,
+        )
+
+        rows = await db.query_all(
+            "SELECT * FROM reminders WHERE event_id = ? ORDER BY offset_min DESC",
+            (event_id,),
+        )
+        assert rows[0]["offset_min"] == 60
+        assert rows[0]["state"] == "sent"
+        assert rows[0]["fire_at_utc"] == reminder["fire_at_utc"]
+        assert rows[1]["offset_min"] == 10
+        assert rows[1]["state"] == "pending"
+        assert rows[1]["fire_at_utc"] == starts - 10 * MINUTE
+
+    async def test_cross_guild_update_does_not_touch_reminders(self, db) -> None:
+        """傳入其他伺服器的 guild_id 時回傳 False，提醒不受影響。"""
+        starts = NOW + 2 * HOUR
+        event_id = await _create(
+            db, guild_id=GUILD_A, starts_at_utc=starts, reminder_offsets_min=[60]
+        )
+        before = await db.query_one(
+            "SELECT * FROM reminders WHERE event_id = ?", (event_id,)
+        )
+
+        ok = await repo.update_event(
+            event_id,
+            GUILD_B,
+            title="被改的標題",
+            starts_at_utc=NOW + 5 * HOUR,
+            ends_at_utc=None,
+            location=None,
+            description=None,
+        )
+        assert ok is False
+
+        after = await db.query_one(
+            "SELECT * FROM reminders WHERE event_id = ?", (event_id,)
+        )
+        assert after["fire_at_utc"] == before["fire_at_utc"]
+        assert after["state"] == before["state"]
+        row = await repo.owned_event(event_id, GUILD_A)
+        assert row["starts_at_utc"] == starts
 
 
 class TestAddEventInvitee:
