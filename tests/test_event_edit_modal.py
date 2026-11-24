@@ -49,6 +49,7 @@ def _make_interaction() -> MagicMock:
     interaction.guild = None  # 略過 build_rsvp_summary 那條分支，不影響本檔案要測的行為
     interaction.response = AsyncMock()
     interaction.response.is_done = MagicMock(return_value=False)
+    interaction.followup = AsyncMock()
     return interaction
 
 

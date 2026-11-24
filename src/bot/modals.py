@@ -295,6 +295,12 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         location = self.location_input.value.strip() or None
         description = self.description_input.value.strip() or None
 
+        # 後面要打多次 DB + 可能兩次 Discord API（改公告、同步原生活動），
+        # Turso 冷啟動時很容易超過 Discord 對 interaction 的 3 秒初次回應期限
+        # （症狀：DB 其實已更新，但使用者看到「回應超時」）。驗證過後立刻
+        # defer，後續改用 followup 回覆。
+        await interaction.response.defer(ephemeral=True)
+
         ok = await repo.update_event(
             self.event_id,
             self.guild_id,
@@ -305,7 +311,7 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
             description=description,
         )
         if not ok:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "找不到這個活動，可能已被刪除。", ephemeral=True
             )
             return
@@ -352,7 +358,7 @@ class EventEditModal(discord.ui.Modal, title="編輯活動"):
         if event_row["discord_event_id"] and interaction.guild is not None:
             await sync_edit(interaction.guild, int(event_row["discord_event_id"]), event_row)
 
-        await interaction.response.send_message("✅ 活動已更新。", ephemeral=True)
+        await interaction.followup.send("✅ 活動已更新。", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         log.exception("編輯活動時發生未預期錯誤", exc_info=error)
